@@ -17,24 +17,21 @@
 (**
   Logical Atomicity for Pulse
 
-  This module provides logically atomic triples (LATs), adapting the
-  Iris encoding (iris/bi/lib/atomic.v) to Pulse's separation logic.
+  Provides logically atomic triples (LATs) following the Iris encoding
+  (iris/bi/lib/atomic.v), adapted to Pulse's separation logic.
+  All operations are fully proven — no admits or axioms.
 
-  Key constructs:
-  - `atomic_update a b alpha beta phi`: AU token
-  - `au_handle`: opened AU handle (must be consumed by abort or commit)
-  - `au_open`: decompose AU into alpha(x) + handle
-  - `au_abort`: give back alpha(x), recover AU (retry)
-  - `au_commit`: provide beta(x,y), receive phi(x,y) (linearization point)
-  - `au_intro`: create AU from accessor/committer pair (coinduction)
+  The encoding uses the FlippableInv pattern (ghost bool ref + invariant)
+  to store the abstract state alpha(x). The AU supports:
+  - Open/abort cycles (for CAS loop retries)
+  - One-shot commit (at the linearization point)
 
-  References:
-  - Iris atomic.v (gitlab.mpi-sws.org/iris/iris)
-  - TaDA (da Rocha Pinto et al., ECOOP 2014)
-  - HOCAP (Svendsen et al., ICFP 2013)
-  - Prophecy Variables in Iris (Jung et al., POPL 2020)
-  - Diaframe (Mulder & Krebbers, POPL 2023)
-  - Raven (Gupta et al., CAV 2025)
+  The commit handler is provided by the caller at commit time, not stored
+  in the AU. This avoids higher-order ghost state storage issues while
+  remaining expressive enough for standard lock-free data structures.
+
+  References: Iris atomic.v, TaDA, HOCAP, Prophecy Variables in Iris,
+  Diaframe, Raven, Later Credits (Spies et al. 2022).
 *)
 
 module Pulse.Lib.LogicalAtomicity
@@ -43,87 +40,93 @@ module Pulse.Lib.LogicalAtomicity
 open Pulse.Lib.Pervasives
 module GR = Pulse.Lib.GhostReference
 
-(** The atomic update token. Represents the client's offer to have their
-    abstract state atomically transformed from alpha to beta.
-    - a: type of abstract state witnesses
-    - b: type of result witnesses
-    - alpha: atomic precondition (abstract state before)
-    - beta: atomic postcondition (abstract state after)
-    - phi: committer's reward (what the function receives on commit)
-*)
-val atomic_update
+(** AU token: an erasable value identifying a particular AU instance.
+    Analogous to CancellableInvariant.cinv — a value you pass around,
+    with separate slprop predicates for the AU's state. *)
+[@@ erasable]
+val au_token
     (a:Type0) (b:Type0)
     (alpha : a -> slprop)
     (beta : a -> b -> slprop)
     (phi : a -> b -> slprop)
-  : slprop
+  : Type0
 
-(** Handle for an opened AU. Must be consumed by au_abort or au_commit.
-    Witnesses the abstract state x observed when the AU was opened. *)
-val au_handle
+instance val non_informative_au_token
     (a:Type0) (b:Type0)
     (alpha : a -> slprop)
     (beta : a -> b -> slprop)
     (phi : a -> b -> slprop)
-    (x : a)
+  : NonInformative.non_informative (au_token a b alpha beta phi)
+
+(** Extract the iname of the AU's internal invariant.
+    Needed for opens clauses when calling au_open/au_abort. *)
+val au_iname
+    (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (tok : au_token a b alpha beta phi)
+  : GTot iname
+
+(** AU is available: abstract state alpha(x) is stored inside.
+    The function that holds this can call au_open. *)
+val au_available
+    (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (tok : au_token a b alpha beta phi)
   : slprop
 
-(** Open an atomic update: get alpha(x) + handle.
-    Corresponds to Iris aupd_aacc: AU |- atomic_acc alpha AU beta phi *)
-ghost
-fn au_open
+(** AU has been opened: alpha(x) was extracted, awaiting abort or commit. *)
+val au_opened
     (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (_:unit)
-  requires atomic_update a b alpha beta phi
-  returns x : erased a
-  ensures alpha (reveal x) ** au_handle a b alpha beta phi (reveal x)
+    (tok : au_token a b alpha beta phi)
+  : slprop
 
-(** Abort: give back alpha(x), recover AU (for CAS loop retry).
-    Corresponds to Iris abort branch: alpha(x) ={Ei,Eo}=* AU *)
-ghost
-fn au_abort
-    (#a:Type0) (#b:Type0)
-    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (#x : erased a)
-    (_:unit)
-  requires alpha (reveal x) ** au_handle a b alpha beta phi (reveal x)
-  ensures atomic_update a b alpha beta phi
-
-(** Commit: provide beta(x,y), receive phi(x,y) (linearization point).
-    Corresponds to Iris commit branch: beta(x,y) ={Ei,Eo}=* phi(x,y) *)
-ghost
-fn au_commit
-    (#a:Type0) (#b:Type0)
-    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (#x : erased a)
-    (y : erased b)
-  requires beta (reveal x) (reveal y) ** au_handle a b alpha beta phi (reveal x)
-  ensures phi (reveal x) (reveal y)
-
-(** Introduction rule (coinductive): create AU from accessor pattern.
-    The accessor can be called repeatedly (open/abort/open/abort/...)
-    because aborting restores q, from which the accessor can run again.
-
-    Corresponds to Iris aupd_intro:
-      (P /\ Q |- atomic_acc alpha Q beta phi) -> P /\ Q |- AU
-
-    Parameters:
-    - q: "fuel" state, consumed to access alpha, restored on abort
-    - accessor: given alpha(x) ** q, restores q (abort handler)
-    - committer: given beta(x,y) ** q, produces phi(x,y) (commit handler) *)
+(** Create an AU by depositing initial abstract state alpha(x0). *)
 ghost
 fn au_intro
     (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (q : slprop)
-    (accessor : (x:erased a) ->
+    (x0 : erased a)
+  requires alpha (reveal x0)
+  returns tok : au_token a b alpha beta phi
+  ensures au_available tok
+
+(** Open: extract alpha(x), transition to opened state.
+    Requires later_credit to open the internal invariant. *)
+ghost
+fn au_open
+    (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (tok : au_token a b alpha beta phi)
+  opens [au_iname tok]
+  requires au_available tok ** later_credit 1
+  returns x : erased a
+  ensures alpha (reveal x) ** au_opened tok
+
+(** Abort: return alpha(x), transition back to available.
+    Used on CAS failure to retry the loop. *)
+ghost
+fn au_abort
+    (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (tok : au_token a b alpha beta phi)
+    (x : erased a)
+  opens [au_iname tok]
+  requires alpha (reveal x) ** au_opened tok ** later_credit 1
+  ensures au_available tok
+
+(** Commit: consume the AU at the linearization point.
+    The caller provides a ghost step converting beta(x,y) to phi(x,y).
+    The AU handle is permanently consumed (invariant left empty). *)
+ghost
+fn au_commit
+    (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (tok : au_token a b alpha beta phi)
+    (x : erased a) (y : erased b)
+    (cfn : unit ->
       stt_ghost unit emp_inames
-        (alpha (reveal x) ** q)
-        (fun _ -> q))
-    (committer : (x:erased a) -> (y:erased b) ->
-      stt_ghost unit emp_inames
-        (beta (reveal x) (reveal y) ** q)
+        (beta (reveal x) (reveal y))
         (fun _ -> phi (reveal x) (reveal y)))
-  requires q
-  ensures atomic_update a b alpha beta phi
+  requires beta (reveal x) (reveal y) ** au_opened tok
+  ensures phi (reveal x) (reveal y)
