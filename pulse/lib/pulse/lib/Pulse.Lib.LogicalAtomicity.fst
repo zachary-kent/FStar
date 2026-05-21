@@ -16,8 +16,7 @@
 
 (**
   Implementation of Logical Atomicity for Pulse.
-  Uses the FlippableInv pattern (ghost bool ref + invariant).
-  No admits — all proofs are complete.
+  FlippableInv pattern — no admits.
 *)
 
 module Pulse.Lib.LogicalAtomicity
@@ -27,8 +26,7 @@ open Pulse.Lib.Pervasives
 open Pulse.Lib.Inv
 module GR = Pulse.Lib.GhostReference
 
-(** Invariant content: when b=true, holds the abstract state;
-    when b=false, holds emp (state was extracted). *)
+(** Invariant content *)
 let au_inv_p (a:Type0) (alpha : a -> slprop) (gr : GR.ref bool) : slprop =
   exists* (b:bool). pts_to gr #0.5R b ** (if b then (exists* (x:a). alpha x) else emp)
 
@@ -36,19 +34,16 @@ ghost
 fn fold_au_inv_p (a:Type0) (alpha : a -> slprop) (gr : GR.ref bool) (#b:bool)
   requires pts_to gr #0.5R b ** (if b then (exists* (x:a). alpha x) else emp)
   ensures au_inv_p a alpha gr
-{
-  fold (au_inv_p a alpha gr)
-}
+{ fold (au_inv_p a alpha gr) }
 
-(** The AU token record *)
+(** Token *)
 noeq
 type au_token (a:Type0) (b:Type0) (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop) = {
   gr : GR.ref bool;
   i : iname;
 }
 
-instance non_informative_au_token
-    (a:Type0) (b:Type0)
+instance non_informative_au_token (a:Type0) (b:Type0)
     (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
   : NonInformative.non_informative (au_token a b alpha beta phi)
   = { reveal = (fun r -> Ghost.reveal r) <: NonInformative.revealer (au_token a b alpha beta phi) }
@@ -57,22 +52,21 @@ let au_iname (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi) : GTot iname = tok.i
 
-(** AU available = our half says true + invariant exists *)
 let au_available (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi) : slprop =
   pts_to tok.gr #0.5R true ** inv tok.i (au_inv_p a alpha tok.gr)
 
-(** AU opened = our half says false + invariant exists *)
 let au_opened (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi) : slprop =
   pts_to tok.gr #0.5R false ** inv tok.i (au_inv_p a alpha tok.gr)
 
-(** Create AU by depositing alpha(x0) *)
-ghost
-fn au_intro
-    (#a:Type0) (#b:Type0)
+(** ============================================================
+    au_intro
+    ============================================================ *)
+
+ghost fn au_intro (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
   requires alpha (reveal x0)
@@ -82,23 +76,21 @@ fn au_intro
   let gr = GR.alloc true;
   GR.share gr;
   fold (exists* (x:a). alpha x);
-  rewrite (exists* (x:a). alpha x)
-       as (if true then (exists* (x:a). alpha x) else emp);
+  rewrite (exists* (x:a). alpha x) as (if true then (exists* (x:a). alpha x) else emp);
   fold_au_inv_p a alpha gr;
   let i = new_invariant (au_inv_p a alpha gr);
   let tok : au_token a b alpha beta phi = { gr; i };
-  rewrite (pts_to gr #0.5R true)
-       as (pts_to tok.gr #0.5R true);
-  rewrite (inv i (au_inv_p a alpha gr))
-       as (inv tok.i (au_inv_p a alpha tok.gr));
+  rewrite (pts_to gr #0.5R true) as (pts_to tok.gr #0.5R true);
+  rewrite (inv i (au_inv_p a alpha gr)) as (inv tok.i (au_inv_p a alpha tok.gr));
   fold (au_available tok);
   tok
 }
 
-(** Open AU: extract alpha(x) using FlippableInv flip_off pattern *)
-ghost
-fn au_open
-    (#a:Type0) (#b:Type0)
+(** ============================================================
+    au_open (flip_off pattern)
+    ============================================================ *)
+
+ghost fn au_open (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi)
   opens [au_iname tok]
@@ -130,10 +122,11 @@ fn au_open
   x
 }
 
-(** Abort: put alpha(x) back using FlippableInv flip_on pattern *)
-ghost
-fn au_abort
-    (#a:Type0) (#b:Type0)
+(** ============================================================
+    au_abort (flip_on pattern)
+    ============================================================ *)
+
+ghost fn au_abort (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi)
     (x : erased a)
@@ -158,17 +151,61 @@ fn au_abort
     tok.gr := true;
     GR.share tok.gr;
     fold (exists* (xx:a). alpha xx);
-    rewrite (exists* (x:a). alpha x)
-         as (if true then (exists* (x:a). alpha x) else emp);
+    rewrite (exists* (x:a). alpha x) as (if true then (exists* (x:a). alpha x) else emp);
     fold_au_inv_p a alpha tok.gr;
   };
   fold (au_available tok)
 }
 
-(** Commit: call committer, drop handle *)
-ghost
-fn au_commit
-    (#a:Type0) (#b:Type0)
+(** ============================================================
+    au_commit (restoring) — flip_on with updated alpha
+    ============================================================ *)
+
+ghost fn au_commit (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (tok : au_token a b alpha beta phi)
+    (x : erased a) (y : erased b)
+    (new_x : erased a)
+    (cfn : unit ->
+      stt_ghost unit emp_inames
+        (beta (reveal x) (reveal y))
+        (fun _ -> alpha (reveal new_x) ** phi (reveal x) (reveal y)))
+  opens [au_iname tok]
+  requires beta (reveal x) (reveal y) ** au_opened tok ** later_credit 1
+  ensures phi (reveal x) (reveal y) ** au_available tok
+{
+  // Step 1: run the committer to split beta into alpha(new_x) ** phi
+  cfn ();
+
+  // Step 2: deposit alpha(new_x) back into the FlippableInv (= au_abort with new_x)
+  open GR;
+  unfold au_opened;
+  with_invariants_g unit emp_inames tok.i (au_inv_p a alpha tok.gr)
+    (alpha (reveal new_x) ** pts_to tok.gr #0.5R false)
+    (fun _ -> pts_to tok.gr #0.5R true)
+  fn _
+  {
+    unfold au_inv_p;
+    with bv.
+      assert (pts_to tok.gr #0.5R bv ** pts_to tok.gr #0.5R false);
+    GR.gather tok.gr #false #_;
+    rewrite each bv as false;
+    rewrite (if false then (exists* (x:a). alpha x) else emp) as emp;
+    drop_ emp;
+    tok.gr := true;
+    GR.share tok.gr;
+    fold (exists* (xx:a). alpha xx);
+    rewrite (exists* (x:a). alpha x) as (if true then (exists* (x:a). alpha x) else emp);
+    fold_au_inv_p a alpha tok.gr;
+  };
+  fold (au_available tok)
+}
+
+(** ============================================================
+    au_commit_consume — permanently consume the AU
+    ============================================================ *)
+
+ghost fn au_commit_consume (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi)
     (x : erased a) (y : erased b)
@@ -180,6 +217,39 @@ fn au_commit
   ensures phi (reveal x) (reveal y)
 {
   cfn ();
+  unfold au_opened;
+  drop_ (pts_to tok.gr #0.5R false);
+  drop_ (inv tok.i (au_inv_p a alpha tok.gr))
+}
+
+(** ============================================================
+    LAT Elimination Rule
+    ============================================================ *)
+
+fn lat_elim (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (x0 : erased a)
+    (f : (tok : au_token a b alpha beta phi) ->
+      stt unit
+        (au_available tok)
+        (fun _ -> au_available tok ** (exists* (x:a) (y:b). phi x y)))
+  requires alpha (reveal x0)
+  ensures (exists* (x:a). alpha x) ** (exists* (x:a) (y:b). phi x y)
+{
+  // 1. Create AU from alpha(x0) — deposits alpha into the FlippableInv
+  let tok = au_intro #a #b #alpha #beta #phi x0;
+
+  // 2. Call the logically atomic function — it opens/commits the AU internally
+  f tok;
+  // Post: au_available tok ** (exists* x y. phi x y)
+
+  // 3. Extract the updated alpha from the AU
+  later_credit_buy 1;
+  let new_x = au_open tok;
+  // Post: alpha(new_x) ** au_opened tok ** (exists* x y. phi x y)
+
+  // 4. Package alpha into existential and clean up
+  fold (exists* (xx:a). alpha xx);
   unfold au_opened;
   drop_ (pts_to tok.gr #0.5R false);
   drop_ (inv tok.i (au_inv_p a alpha tok.gr))
