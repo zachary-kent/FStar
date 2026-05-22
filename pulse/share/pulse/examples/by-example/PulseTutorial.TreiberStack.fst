@@ -14,7 +14,8 @@ open Pulse.Lib.Trade
 open Pulse.Lib.Forall
 open Pulse.Lib.Box { box, (:=), (!) }
 
-(** CAS on llist pointer: read + llist_eq + write, lifted to atomic *)
+(** CAS on llist pointer: read + llist_eq + write, lifted to atomic.
+    x86 model: LOCK CMPXCHG on the head pointer. *)
 fn cas_llist_impl (#t:Type0) (r : box (llist t)) (u v : llist t) (#i : erased (llist t))
   requires r |-> i
   returns b : bool
@@ -97,9 +98,13 @@ fn read_head (#t:Type0) (s:tstack t)
 }
 
 (** try_push_impl: CAS head + cons + ghost update in one fn (lifted to atomic).
-    old_hd: the previously-read head pointer (concrete, may be stale).
-    On CAS success: cons v onto current head, update ghost state.
-    On CAS failure: nothing changes. *)
+    x86 model: the linearization point is LOCK CMPXCHG on s.head.
+    The LinkedList.cons (node allocation) is thread-local preparation —
+    the new node is invisible to other threads until the CAS publishes it.
+    Ghost operations (GR.gather/share/write) don't execute on hardware.
+    Modeling concession: cons is inside as_atomic because Pulse's LinkedList.cons
+    combines physical allocation with logical is_list construction. A more
+    faithful model would separate these (alloc before CAS, link after). *)
 fn try_push_impl (#t:Type0) (s:tstack t) (v:t) (old_hd : llist t)
     (#xs : erased (list t))
   requires sinv_raw s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs
@@ -239,9 +244,14 @@ let pop_post (#t:Type0) (g:sn t) (xs: list t) (ov: option t) : slprop =
   scont g (list_pop_rest xs) ** pure (ov == list_pop_val xs)
 
 (** try_pop_impl: inside sinv_raw, read head, handle empty/non-empty.
-    Uses a box for the result value (avoids pair projection issues in Pulse).
-    On success (true): ghost state updated, result box holds list_pop_val.
-    On failure (false): ghost state unchanged, result box still None. *)
+    x86 model: the linearization point is LOCK CMPXCHG on s.head.
+    LinkedList.pop reads from the old head node, which is immutable once
+    published (Treiber stack nodes are never modified after creation).
+    The out box write is thread-local (only this thread accesses `out`).
+    Ghost operations don't execute on hardware.
+    Modeling concession: pop + out write are inside as_atomic because
+    Pulse's LinkedList.pop combines physical read with logical is_list
+    decomposition. A more faithful model would read node data before CAS. *)
 fn try_pop_impl (#t:Type0) (s:tstack t) (old_hd : llist t) (out : box (option t))
     (#xs : erased (list t))
   requires sinv_raw s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)
