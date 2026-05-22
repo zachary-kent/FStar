@@ -139,3 +139,23 @@ let atomic_faa (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
   : stt_atomic U32.t #Observable emp_inames
     (B.pts_to r cur) (fun old -> B.pts_to r (U32.add_mod old delta) ** pure (old == reveal cur))
   = Pulse.Lib.Core.as_atomic _ _ (atomic_faa_impl r delta #cur)
+
+(* Persistent read: unfold existential, read, refold *)
+fn atomic_read_persistent_impl (#a:Type0) (r : B.box a) (#v : a)
+  requires persistent_pts_to r v
+  returns x : a
+  ensures persistent_pts_to r v ** pure (x == v)
+{
+  unfold persistent_pts_to;
+  with p. assert (B.pts_to r #p v);
+  B.share r;
+  let x = B.op_Bang r;
+  B.gather r;
+  fold (persistent_pts_to r v);
+  x
+}
+
+let atomic_read_persistent (#a:Type0) (r : B.box a) (#v : a)
+  : stt_atomic a #Observable emp_inames
+    (persistent_pts_to r v) (fun x -> persistent_pts_to r v ** pure (x == v))
+  = Pulse.Lib.Core.as_atomic _ _ (atomic_read_persistent_impl r #v)

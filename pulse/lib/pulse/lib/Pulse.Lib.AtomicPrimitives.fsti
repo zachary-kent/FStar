@@ -92,3 +92,18 @@ val atomic_cas_box (#a:Type0) (r : B.box (B.box a))
 val atomic_faa (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
   : stt_atomic U32.t #Observable emp_inames
     (B.pts_to r cur) (fun old -> B.pts_to r (U32.add_mod old delta) ** pure (old == reveal cur))
+
+(* ================================================================ *)
+(* Persistent read — load from a persistently-owned location        *)
+(* HeapLang: !l  (where l ↦□ v)                                    *)
+(* The proof requires ghost existential elimination, but the        *)
+(* physical operation is a single load.                             *)
+(* ================================================================ *)
+
+let persistent_pts_to (#a:Type0) (r : B.box a) (v : a) : slprop =
+  exists* (p:perm). B.pts_to r #p v
+
+val atomic_read_persistent (#a:Type0) (r : B.box a) (#v : a)
+  : stt_atomic a #Observable emp_inames
+    (persistent_pts_to r v)
+    (fun x -> persistent_pts_to r v ** pure (x == v))
