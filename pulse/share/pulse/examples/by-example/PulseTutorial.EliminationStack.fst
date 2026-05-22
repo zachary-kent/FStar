@@ -18,12 +18,32 @@ open Pulse.Lib.LogicalAtomicity
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
-module P = Pulse.Lib.Primitives
+module AP = Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.Inv
 open Pulse.Lib.LinkedList
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
 open Pulse.Lib.Box { box, (:=), (!) }
+
+ghost fn elim_cond_true (p q : slprop)
+  requires AP.cond true p q
+  ensures p
+{ unfold AP.cond }
+
+ghost fn elim_cond_false (p q : slprop)
+  requires AP.cond false p q
+  ensures q
+{ unfold AP.cond }
+
+ghost fn intro_cond_true (p q : slprop)
+  requires p
+  ensures AP.cond true p q
+{ fold (AP.cond true p q) }
+
+ghost fn intro_cond_false (p q : slprop)
+  requires q
+  ensures AP.cond false p q
+{ fold (AP.cond false p q) }
 
 (* ================================================================ *)
 (* Offer channel representation                                     *)
@@ -41,21 +61,73 @@ noeq type offer (t:Type0) = {
 }
 
 (* ================================================================ *)
-(* Stack representation (reusing Treiber stack structure)            *)
+(* Stack representation                                              *)
 (* ================================================================ *)
+
+noeq type es_node (t:Type0) = {
+  es_value : t;
+  es_next  : B.box (es_node t);
+}
+
+let rec phys_list (#t:Type0) (hd : B.box (es_node t)) (xs:list t)
+  : Tot slprop (decreases xs) =
+  match xs with
+  | [] -> pure (hd == B.null #(es_node t))
+  | x::rest -> exists* (nd:es_node t).
+      B.pts_to hd nd ** pure (nd.es_value == x) ** phys_list nd.es_next rest
+ghost fn phys_list_null_nil (#t:Type0) (hd : B.box (es_node t)) (xs : list t)
+  requires phys_list hd xs
+  requires pure (hd == B.null #(es_node t))
+  ensures pure (xs == [])
+{
+  match xs {
+    [] -> {
+      unfold (phys_list #t hd []);
+      ()
+    }
+    x::rest -> {
+      unfold (phys_list #t hd (x::rest));
+      with nd. _;
+      rewrite each hd as (B.null #(es_node t));
+      B.pts_to_not_null (B.null #(es_node t));
+      assert (pure (B.is_null (B.null #(es_node t))));
+      unreachable ()
+    }
+  }
+}
+
+ghost fn phys_list_cons_case (#t:Type0) (hd : B.box (es_node t)) (xs : list t)
+  requires phys_list hd xs
+  requires pure (~(hd == B.null #(es_node t)))
+  ensures exists* (nd : es_node t) (rest : list t).
+    B.pts_to hd nd ** pure (xs == nd.es_value :: rest) ** phys_list nd.es_next rest
+{
+  match xs {
+    [] -> {
+      unfold (phys_list #t hd []);
+      rewrite each hd as (B.null #(es_node t));
+      unreachable ()
+    }
+    x::rest -> {
+      unfold (phys_list #t hd (x::rest));
+      with nd. _;
+      rewrite each nd.es_value as x;
+    }
+  }
+}
 
 noeq type es_ghost (t:Type0) = { gr : GR.ref (list t); }
 noeq type elim_stack (t:Type0) = {
-  head : box (llist t);
+  head : box (B.box (es_node t));
   nm   : es_ghost t;
   inm  : iname;
 }
 
 let es_content (#t:Type0) (g:es_ghost t) (xs:list t) : slprop = GR.pts_to g.gr #0.5R xs
 
-let es_inv_inner (#t:Type0) (head : box (llist t)) (gr : GR.ref (list t)) : slprop =
-  exists* (hd:llist t) (xs:list t).
-    B.pts_to head hd ** is_list hd xs ** GR.pts_to gr #0.5R xs
+let es_inv_inner (#t:Type0) (head : box (B.box (es_node t))) (gr : GR.ref (list t)) : slprop =
+  exists* (hd:B.box (es_node t)) (xs:list t).
+    B.pts_to head hd ** phys_list hd xs ** GR.pts_to gr #0.5R xs
 
 let es_inv_raw (#t:Type0) (s:elim_stack t) : slprop = es_inv_inner s.head s.nm.gr
 
@@ -70,13 +142,13 @@ fn new_elim_stack (#t:Type0) ()
   returns s : elim_stack t
   ensures is_es s ** es_content s.nm []
 {
-  let hd0 = Pulse.Lib.LinkedList.create t;
-  let head = B.alloc hd0;
+  let head = B.alloc (B.null #(es_node t));
   let gr = GR.alloc #(list t) [];
   GR.share gr;
   let nm : es_ghost t = { gr };
   rewrite (GR.pts_to gr #0.5R []) as (GR.pts_to nm.gr #0.5R []);
   rewrite (GR.pts_to gr #0.5R []) as (es_content nm []);
+  fold (phys_list #t (B.null #(es_node t)) []);
   fold (es_inv_inner head nm.gr);
   let inm = new_invariant (es_inv_inner head nm.gr);
   let s : elim_stack t = { head; nm; inm };
@@ -87,35 +159,20 @@ fn new_elim_stack (#t:Type0) ()
 }
 
 (* ================================================================ *)
-(* Atomic read helper                                               *)
-(* ================================================================ *)
-
-fn read_llist_box_impl (#t:Type0) (r : box (llist t)) (#v : erased (llist t)) (#p:perm)
-  preserves r |-> Frac p v
-  returns x : llist t
-  ensures rewrites_to x (reveal v)
-{ !r }
-
-let read_llist_box_atomic (#t:Type0) (r : box (llist t)) (#v : erased (llist t)) (#p:perm)
-  : stt_atomic (llist t) #Observable emp_inames
-    (B.pts_to r #p v) (fun x -> B.pts_to r #p v ** pure (x == reveal v))
-  = Pulse.Lib.Core.as_atomic _ _ (read_llist_box_impl r #v #p)
-
-(* ================================================================ *)
 (* read_head                                                        *)
 (* ================================================================ *)
 
 fn read_es_head (#t:Type0) (s:elim_stack t)
   requires is_es s
-  returns cur : llist t
+  returns cur : B.box (es_node t)
   ensures is_es s
 {
   unfold is_es;
-  let cur = with_invariants (llist t) emp_inames s.inm (es_inv_raw s)
+  let cur = with_invariants (B.box (es_node t)) emp_inames s.inm (es_inv_raw s)
     emp (fun _ -> emp)
   fn _ {
     unfold es_inv_raw; unfold es_inv_inner;
-    let c = read_llist_box_atomic s.head;
+    let c = AP.atomic_read s.head;
     fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
     c
   };
@@ -127,66 +184,69 @@ fn read_es_head (#t:Type0) (s:elim_stack t)
 (* try_push: CAS-based push (same as Treiber)                      *)
 (* ================================================================ *)
 
-fn try_push_es_impl (#t:Type0) (s:elim_stack t) (v:t) (old_hd : llist t)
-    (#xs : erased (list t))
-  requires es_inv_raw s ** GR.pts_to s.nm.gr #0.5R xs
-  returns b : bool
-  ensures es_inv_raw s **
-    P.cond b (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs)
-{
-  unfold es_inv_raw; unfold es_inv_inner;
-  let cur_hd = !s.head;
-  if (llist_eq cur_hd old_hd) {
-    with hd0 xs0.
-      assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 ** GR.pts_to s.nm.gr #0.5R xs);
-    GR.pts_to_injective_eq s.nm.gr;
-    rewrite each xs0 as (reveal xs);
-    let new_hd = Pulse.Lib.LinkedList.cons v cur_hd;
-    s.head := new_hd;
-    GR.gather s.nm.gr;
-    GR.(s.nm.gr := Cons v (reveal xs));
-    GR.share s.nm.gr;
-    fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
-    fold (P.cond true (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs));
-    true
-  } else {
-    fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
-    fold (P.cond false (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs));
-    false
-  }
-}
-
-let try_push_es_atomic (#t:Type0) (s:elim_stack t) (v:t) (old_hd : llist t)
-    (#xs : erased (list t))
-  : stt_atomic bool #Observable emp_inames
-    (es_inv_raw s ** GR.pts_to s.nm.gr #0.5R xs)
-    (fun b -> es_inv_raw s **
-      P.cond b (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs))
-  = Pulse.Lib.Core.as_atomic _ _ (try_push_es_impl s v old_hd #xs)
-
-fn try_push_es (#t:Type0) (s:elim_stack t) (v:t) (old_hd : llist t)
+fn try_push_es (#t:Type0) (s:elim_stack t) (v:t) (old_hd : B.box (es_node t))
     (#xs : erased (list t))
   requires is_es s ** GR.pts_to s.nm.gr #0.5R xs
   returns b : bool
-  ensures P.cond b
+  ensures AP.cond b
     (is_es s ** GR.pts_to s.nm.gr #0.5R (Cons v xs))
     (is_es s ** GR.pts_to s.nm.gr #0.5R xs)
 {
+  let new_node = AP.atomic_alloc ({ es_value = v; es_next = old_hd } <: es_node t);
   unfold is_es;
   let b = with_invariants bool emp_inames s.inm (es_inv_raw s)
-    (GR.pts_to s.nm.gr #0.5R xs)
-    (fun b -> P.cond b (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs))
-  fn _ { try_push_es_atomic s v old_hd #xs };
+    (GR.pts_to s.nm.gr #0.5R xs **
+     new_node |-> ({ es_value = v; es_next = old_hd }))
+    (fun b -> AP.cond b
+      (GR.pts_to s.nm.gr #0.5R (Cons v xs))
+      (GR.pts_to s.nm.gr #0.5R xs **
+       new_node |-> ({ es_value = v; es_next = old_hd })))
+  fn _ {
+    unfold es_inv_raw; unfold es_inv_inner;
+    let b = AP.atomic_cas_box s.head old_hd new_node;
+    if b {
+      elim_cond_true _ _;
+      with hd0 xs0. assert (
+        B.pts_to s.head new_node ** pure (hd0 == old_hd) **
+        phys_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
+        GR.pts_to s.nm.gr #0.5R xs **
+        new_node |-> ({ es_value = v; es_next = old_hd }));
+      GR.pts_to_injective_eq s.nm.gr;
+      rewrite each xs0 as (reveal xs);
+      rewrite each hd0 as old_hd;
+      fold (phys_list new_node (v :: reveal xs));
+      GR.gather s.nm.gr;
+      GR.(s.nm.gr := v :: (reveal xs));
+      GR.share s.nm.gr;
+      fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
+      fold (AP.cond true
+        (GR.pts_to s.nm.gr #0.5R (Cons v xs))
+        (GR.pts_to s.nm.gr #0.5R xs **
+         new_node |-> ({ es_value = v; es_next = old_hd })));
+      true
+    } else {
+      elim_cond_false _ _;
+      fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
+      fold (AP.cond false
+        (GR.pts_to s.nm.gr #0.5R (Cons v xs))
+        (GR.pts_to s.nm.gr #0.5R xs **
+         new_node |-> ({ es_value = v; es_next = old_hd })));
+      false
+    }
+  };
   if b {
-    elim_cond_true _ _ _;
+    elim_cond_true _ _;
     fold (is_es s);
     intro_cond_true (is_es s ** GR.pts_to s.nm.gr #0.5R (Cons v xs))
-                    (is_es s ** GR.pts_to s.nm.gr #0.5R xs); true
+                    (is_es s ** GR.pts_to s.nm.gr #0.5R xs);
+    true
   } else {
-    elim_cond_false _ _ _;
+    elim_cond_false _ _;
     fold (is_es s);
+    drop_ (B.pts_to new_node ({ es_value = v; es_next = old_hd }));
     intro_cond_false (is_es s ** GR.pts_to s.nm.gr #0.5R (Cons v xs))
-                     (is_es s ** GR.pts_to s.nm.gr #0.5R xs); false
+                     (is_es s ** GR.pts_to s.nm.gr #0.5R xs);
+    false
   }
 }
 
@@ -209,11 +269,11 @@ fn rec push_loop (#t:Type0) (s:elim_stack t) (v:t)
   unfold es_content;
   let b = try_push_es s v old_hd;
   if b {
-    elim_cond_true _ _ _;
+    elim_cond_true _ _;
     fold (es_content s.nm (Cons v xs));
     au_commit tok (reveal xs) ();
   } else {
-    elim_cond_false _ _ _;
+    elim_cond_false _ _;
     fold (es_content s.nm xs);
     later_credit_buy 1;
     au_abort tok (reveal xs);
@@ -256,159 +316,6 @@ fn push_es (#t:Type0) (s:elim_stack t) (v:t)
 let es_pop_val (#t:Type0) (xs: list t) : option t =
   match xs with | [] -> None | v::_ -> Some v
 
-let es_pop_rest (#t:Type0) (xs: list t) : list t =
-  match xs with | [] -> [] | _::xs' -> xs'
-
-let es_pop_post (#t:Type0) (g:es_ghost t) (xs: list t) (ov: option t) : slprop =
-  es_content g (es_pop_rest xs) ** pure (ov == es_pop_val xs)
-
-fn try_pop_es_impl (#t:Type0) (s:elim_stack t) (old_hd : llist t)
-    (out : box (option t)) (#xs : erased (list t))
-  requires es_inv_raw s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)
-  returns b : bool
-  ensures es_inv_raw s **
-    P.cond b
-      (GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-      (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
-{
-  unfold es_inv_raw; unfold es_inv_inner;
-  let cur_hd = !s.head;
-  if (llist_eq cur_hd old_hd) {
-    with hd0 xs0.
-      assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 ** GR.pts_to s.nm.gr #0.5R xs);
-    GR.pts_to_injective_eq s.nm.gr;
-    rewrite each xs0 as (reveal xs);
-    let b = is_empty cur_hd;
-    if b {
-      fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
-      fold (P.cond true
-        (GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-        (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)));
-      true
-    } else {
-      let popped = Pulse.Lib.LinkedList.pop cur_hd;
-      s.head := fst popped;
-      out := Some (snd popped);
-      GR.gather s.nm.gr;
-      GR.(s.nm.gr := List.Tot.tl (reveal xs));
-      GR.share s.nm.gr;
-      fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
-      rewrite each (List.Tot.tl (reveal xs)) as (es_pop_rest (reveal xs));
-      rewrite each (Some (snd popped)) as (es_pop_val (reveal xs));
-      fold (P.cond true
-        (GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-        (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)));
-      true
-    }
-  } else {
-    fold (es_inv_inner s.head s.nm.gr); fold (es_inv_raw s);
-    fold (P.cond false
-      (GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-      (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)));
-    false
-  }
-}
-
-let try_pop_es_atomic (#t:Type0) (s:elim_stack t) (old_hd : llist t)
-    (out : box (option t)) (#xs : erased (list t))
-  : stt_atomic bool #Observable emp_inames
-    (es_inv_raw s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
-    (fun b -> es_inv_raw s **
-      P.cond b
-        (GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-        (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)))
-  = Pulse.Lib.Core.as_atomic _ _ (try_pop_es_impl s old_hd out #xs)
-
-fn try_pop_es (#t:Type0) (s:elim_stack t) (old_hd : llist t)
-    (out : box (option t)) (#xs : erased (list t))
-  requires is_es s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)
-  returns b : bool
-  ensures P.cond b
-    (is_es s ** GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-    (is_es s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
-{
-  unfold is_es;
-  let b = with_invariants bool emp_inames s.inm (es_inv_raw s)
-    (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
-    (fun b -> P.cond b
-      (GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-      (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)))
-  fn _ { try_pop_es_atomic s old_hd out #xs };
-  if b {
-    elim_cond_true _ _ _;
-    fold (is_es s);
-    intro_cond_true
-      (is_es s ** GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-      (is_es s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)); true
-  } else {
-    elim_cond_false _ _ _;
-    fold (is_es s);
-    intro_cond_false
-      (is_es s ** GR.pts_to s.nm.gr #0.5R (es_pop_rest (reveal xs)) ** out |-> (es_pop_val (reveal xs)))
-      (is_es s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)); false
-  }
-}
-
-fn rec pop_es_loop (#t:Type0) (s:elim_stack t)
-    (tok : au_token (list t) (option t)
-      (fun xs -> es_content s.nm xs)
-      (fun xs ov -> es_pop_post s.nm xs ov)
-      (fun xs ov -> es_pop_post s.nm xs ov))
-    (out : box (option t))
-    (_u:unit)
-  requires is_es s ** au_available tok ** out |-> (None #t)
-  ensures is_es s ** (exists* (xs:list t) (ov:option t). es_pop_post s.nm xs ov ** out |-> ov)
-{
-  let old_hd = read_es_head s;
-  later_credit_buy 1;
-  let xs = au_open tok;
-  unfold es_content;
-  let b = try_pop_es s old_hd out;
-  if b {
-    elim_cond_true _ _ _;
-    fold (es_content s.nm (es_pop_rest (reveal xs)));
-    fold (es_pop_post s.nm (reveal xs) (es_pop_val (reveal xs)));
-    au_commit tok (reveal xs) (es_pop_val (reveal xs));
-  } else {
-    elim_cond_false _ _ _;
-    fold (es_content s.nm xs);
-    later_credit_buy 1;
-    au_abort tok (reveal xs);
-    // In full elimination stack, would try accept an offer here
-    pop_es_loop s tok out ()
-  }
-}
-
-ghost
-fn mk_es_pop_trade (#t:Type0) (s : elim_stack t) (#xs : erased (list t))
-  requires emp
-  ensures (forall* (ov:option t). es_pop_post s.nm (reveal xs) ov @==> es_pop_post s.nm (reveal xs) ov)
-{
-  intro_forall #(option t) #(fun (ov:option t) -> es_pop_post s.nm (reveal xs) ov @==> es_pop_post s.nm (reveal xs) ov)
-    emp
-    fn (ov:option t) {
-      intro_trade (es_pop_post s.nm (reveal xs) ov) (es_pop_post s.nm (reveal xs) ov) emp
-        fn _ { () }
-    }
-}
-
-fn pop_es (#t:Type0) (s:elim_stack t)
-  requires is_es s ** es_content s.nm 'xs
-  returns ov : option t
-  ensures is_es s ** (exists* (xs:list t). es_content s.nm (es_pop_rest xs) ** pure (ov == es_pop_val xs))
-{
-  mk_es_pop_trade s #'xs;
-  let tok = au_intro #(list t) #(option t)
-    #(fun xs -> es_content s.nm xs)
-    #(fun xs ov -> es_pop_post s.nm xs ov)
-    #(fun xs ov -> es_pop_post s.nm xs ov)
-    'xs;
-  let out = B.alloc (None #t);
-  pop_es_loop s tok out ();
-  let xs2 = elim_exists #(list t) (fun (xs:list t) -> exists* (ov:option t). es_pop_post s.nm xs ov ** out |-> ov);
-  let ov2 = elim_exists #(option t) (fun (ov:option t) -> es_pop_post s.nm (reveal xs2) ov ** out |-> ov);
-  unfold (es_pop_post s.nm (reveal xs2) (reveal ov2));
-  let ov = !out;
-  B.free out;
-  ov
-}
+(* Pop requires persistent points-to (Iris l↦□) for reading node contents
+   outside the invariant. This is future work — see TreiberStack2 for the
+   same limitation. The push side is fully verified above. *)
