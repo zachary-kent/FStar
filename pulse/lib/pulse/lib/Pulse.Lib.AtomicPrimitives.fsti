@@ -107,3 +107,12 @@ val atomic_read_persistent (#a:Type0) (r : B.box a) (#v : a)
   : stt_atomic a #Observable emp_inames
     (persistent_pts_to r v)
     (fun x -> persistent_pts_to r v ** pure (x == v))
+
+
+val make_persistent (#a:Type0) (r : B.box a) (#v : erased a) (#p:perm)
+  : stt_ghost unit emp_inames
+    (B.pts_to r #p v) (fun _ -> persistent_pts_to r (reveal v))
+
+val dup_persistent (#a:Type0) (r : B.box a) (#v : a)
+  : stt_ghost unit emp_inames
+    (persistent_pts_to r v) (fun _ -> persistent_pts_to r v ** persistent_pts_to r v)
