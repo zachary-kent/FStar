@@ -145,3 +145,4 @@ fn reverse (#t:Type0) (x:llist t)
   requires is_list x 'l
   returns y:llist t
   ensures is_list y (List.Tot.rev 'l)
+val llist_eq (#t:Type0) (x y : llist t) : b:bool{b <==> x == y}

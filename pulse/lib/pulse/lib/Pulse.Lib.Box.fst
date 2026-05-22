@@ -143,3 +143,5 @@ fn pts_to_not_null (#a:_) (#p:_) (r:box a) (#v:a)
   R.pts_to_not_null (B?.r r);
   fold (pts_to r #p v);
 }
+
+let box_eq #a x y = admit ()
