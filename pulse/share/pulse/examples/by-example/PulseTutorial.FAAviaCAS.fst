@@ -185,7 +185,7 @@ fn try_add (c:counter) (old_n delta : U32.t) (#n : erased U32.t)
     the CAS loop is parametric in the client's postcondition. *)
 fn rec faa_loop (c:counter) (delta:U32.t)
     (#phi : U32.t -> U32.t -> slprop)
-    (tok : au_token U32.t U32.t
+    (tok : au_token emp_inames U32.t U32.t
       (fun n -> ctr_val c.cg n)
       (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
       phi)
@@ -253,7 +253,7 @@ fn fetch_and_add_seq (c:counter) (delta:U32.t)
   ensures is_ctr c ** (exists* n. ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
 {
   mk_faa_trade c delta #'n;
-  let tok = au_intro #U32.t #U32.t
+  let tok = au_intro #emp_inames #U32.t #U32.t
     #(fun n -> ctr_val c.cg n)
     #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
     #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))

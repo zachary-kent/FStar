@@ -26,7 +26,7 @@
   ┌──────────────────────┬─────────────────────────────────────────┬───────────────┐
   │ Pulse                │ Iris (atomic.v)                        │ Faithfulness  │
   ├──────────────────────┼─────────────────────────────────────────┼───────────────┤
-  │ au_token a b α β Φ  │ atomic_update Eo Ei α β Φ : PROP       │ Reified token │
+  │ au_token is a b α β Φ  │ atomic_update Eo Ei α β Φ : PROP       │ Reified token │
   │                      │   (line 25-27, greatest fixpoint ν)    │ vs BI prop    │
   ├──────────────────────┼─────────────────────────────────────────┼───────────────┤
   │ au_available tok     │ AU Eo Ei α β Φ                         │ ✓ protocol    │
@@ -120,31 +120,31 @@ module GR = Pulse.Lib.GhostReference
     Iris: atomic_update is a PROP (greatest fixpoint). Here: an allocated
     ghost object (ghost bool ref + invariant name). See atomic.v line 25-27. *)
 [@@ erasable]
-val au_token (a:Type0) (b:Type0)
+val au_token (is:inames) (a:Type0) (b:Type0)
     (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop) : Type0
 
-instance val non_informative_au_token (a:Type0) (b:Type0)
+instance val non_informative_au_token (is:inames) (a:Type0) (b:Type0)
     (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
-  : NonInformative.non_informative (au_token a b alpha beta phi)
+  : NonInformative.non_informative (au_token is a b alpha beta phi)
 
 (** The iname backing the AU invariant.
     Iris: AU opening uses masks Eo→Ei. Pulse approximation: opens [au_iname tok]. *)
-val au_iname (#a:Type0) (#b:Type0)
+val au_iname (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi) : GTot iname
+    (tok : au_token is a b alpha beta phi) : GTot iname
 
 (** AU is available (not currently opened). Iris: the AU proposition itself. *)
-val au_available (#a:Type0) (#b:Type0)
+val au_available (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi) : slprop
+    (tok : au_token is a b alpha beta phi) : slprop
 
 (** AU has been opened, witnessing abstract value x.
     Iris: the opened accessor state — α(x) is extracted, abort/commit branches available.
     The handle is indexed by x (phantom), preventing open-at-x₁/commit-at-x₂.
     See atomic.v line 16-20 (atomic_acc definition). *)
-val au_opened (#a:Type0) (#b:Type0)
+val au_opened (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi) (x : a) : slprop
+    (tok : au_token is a b alpha beta phi) (x : a) : slprop
 
 (** Introduction: deposit α(x₀) AND the commit contract ∀y. β(x₀,y) @==> Φ(x₀,y).
     
@@ -153,19 +153,19 @@ val au_opened (#a:Type0) (#b:Type0)
     concrete α(x₀) + trade instead. This is strictly more concrete: the client
     must provide the initial abstract state and commit contract upfront.
     Gap: no coinductive/persistent accessor. *)
-ghost fn au_intro (#a:Type0) (#b:Type0)
+ghost fn au_intro (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
-  requires alpha (reveal x0) ** (forall* (y:b). beta (reveal x0) y @==> phi (reveal x0) y)
-  returns tok : au_token a b alpha beta phi
+  requires alpha (reveal x0) ** (forall* (y:b). trade #is (beta (reveal x0) y) (phi (reveal x0) y))
+  returns tok : au_token is a b alpha beta phi
   ensures au_available tok
 
 (** Open: extract α(x). The commit contract stays in the handle.
     Iris aupd_aacc (line 253): unfolds AU into atomic_acc Eo Ei α AU β Φ.
     Faithfully captured: open extracts α(x), abort restores AU, commit yields Φ. *)
-ghost fn au_open (#a:Type0) (#b:Type0)
+ghost fn au_open (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi)
+    (tok : au_token is a b alpha beta phi)
   opens [au_iname tok]
   requires au_available tok ** later_credit 1
   returns x : erased a
@@ -174,9 +174,9 @@ ghost fn au_open (#a:Type0) (#b:Type0)
 (** Abort: return α(x), recover AU.
     Iris abort branch (line 17): α(x) ={Ei,Eo}=∗ AU.
     Faithfully captured: flips ghost bool false→true. *)
-ghost fn au_abort (#a:Type0) (#b:Type0)
+ghost fn au_abort (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi) (x : erased a)
+    (tok : au_token is a b alpha beta phi) (x : erased a)
   opens [au_iname tok]
   requires alpha (reveal x) ** au_opened tok (reveal x) ** later_credit 1
   ensures au_available tok
@@ -186,10 +186,11 @@ ghost fn au_abort (#a:Type0) (#b:Type0)
     Gap: trade is same-mask (@==> with emp_inames), not mask-changing ={Ei,Eo}=∗.
     Iris commit can open invariants during the fancy update; ours cannot.
     Faithfully captured: protocol shape (β in, Φ out, AU consumed). *)
-ghost fn au_commit (#a:Type0) (#b:Type0)
+ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi)
+    (tok : au_token is a b alpha beta phi)
     (x : erased a) (y : b)
+  opens is
   requires beta (reveal x) y ** au_opened tok (reveal x)
   ensures phi (reveal x) y
 
@@ -197,12 +198,12 @@ ghost fn au_commit (#a:Type0) (#b:Type0)
     Iris: directly composing au_intro with an AU-consuming computation.
     Faithfully captured. *)
 
-fn lat_elim (#a:Type0) (#b:Type0)
+fn lat_elim (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
-    (f : (tok : au_token a b alpha beta phi) ->
+    (f : (tok : au_token is a b alpha beta phi) ->
       stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
-  requires alpha (reveal x0) ** (forall* (y:b). beta (reveal x0) y @==> phi (reveal x0) y)
+  requires alpha (reveal x0) ** (forall* (y:b). trade #is (beta (reveal x0) y) (phi (reveal x0) y))
   ensures (exists* (x:a) (y:b). phi x y)
 
 (** lat_open: restricted form of Iris aacc_aupd_commit (line 387).
@@ -212,15 +213,15 @@ fn lat_elim (#a:Type0) (#b:Type0)
     produce Φ, then uses split_phi to decompose Φ into restored α +
     result. Does NOT model abort-path composition or mask choreography.
     Gap: restricted to commit-only postprocessing; no inner accessor. *)
-fn lat_open (#a:Type0) (#b:Type0)
+fn lat_open (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (#result : a -> b -> slprop)
     (x0 : erased a)
-    (f : (tok : au_token a b alpha beta phi) ->
+    (f : (tok : au_token is a b alpha beta phi) ->
       stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
     (split_phi : (x:erased a) -> (y:erased b) ->
       stt_ghost unit emp_inames
         (phi (reveal x) (reveal y))
-        (fun _ -> (exists* (x':a). alpha x' ** (forall* (yy:b). beta x' yy @==> phi x' yy)) ** result (reveal x) (reveal y)))
-  requires alpha (reveal x0) ** (forall* (y:b). beta (reveal x0) y @==> phi (reveal x0) y)
-  ensures (exists* (x:a). alpha x ** (forall* (y:b). beta x y @==> phi x y)) ** (exists* (x:a) (y:b). result x y)
+        (fun _ -> (exists* (x':a). alpha x' ** (forall* (yy:b). trade #is (beta x' yy) (phi x' yy))) ** result (reveal x) (reveal y)))
+  requires alpha (reveal x0) ** (forall* (y:b). trade #is (beta (reveal x0) y) (phi (reveal x0) y))
+  ensures (exists* (x:a). alpha x ** (forall* (y:b). trade #is (beta x y) (phi x y))) ** (exists* (x:a) (y:b). result x y)
