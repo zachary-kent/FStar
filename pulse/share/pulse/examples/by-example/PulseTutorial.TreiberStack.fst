@@ -63,16 +63,16 @@ fn rec push_loop
 
   let success =
     with_invariants bool emp_inames s.inm (sinv s.hd s.nm)
-      (pts_to s.nm.gr #0.5R xs ** au_opened tok)
+      (pts_to s.nm.gr #0.5R xs ** au_opened tok (reveal xs))
       (fun b -> P.cond b
-        (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok)
-        (pts_to s.nm.gr #0.5R xs ** au_opened tok))
+        (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok (reveal xs))
+        (pts_to s.nm.gr #0.5R xs ** au_opened tok (reveal xs)))
     fn _ {
       unfold sinv;
       with ver0. unfold (inv_inner s.hd s.nm ver0);
       with xs0.
         assert (B.pts_to s.hd ver0 ** pts_to s.nm.gr #0.5R xs0 **
-                pts_to s.nm.gr #0.5R xs ** au_opened tok);
+                pts_to s.nm.gr #0.5R xs ** au_opened tok (reveal xs));
       GR.pts_to_injective_eq s.nm.gr;
       rewrite each xs0 as (reveal xs);
       let b = P.cas_box s.hd 0ul 1ul;
@@ -84,15 +84,15 @@ fn rec push_loop
         GR.share s.nm.gr;
         fold (inv_inner s.hd s.nm 1ul);
         fold (sinv s.hd s.nm);
-        intro_cond_true (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok)
-                        (pts_to s.nm.gr #0.5R xs ** au_opened tok);
+        intro_cond_true (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok (reveal xs))
+                        (pts_to s.nm.gr #0.5R xs ** au_opened tok (reveal xs));
         true
       } else {
         elim_cond_false _ _ _;
         fold (inv_inner s.hd s.nm ver0);
         fold (sinv s.hd s.nm);
-        intro_cond_false (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok)
-                         (pts_to s.nm.gr #0.5R xs ** au_opened tok);
+        intro_cond_false (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok (reveal xs))
+                         (pts_to s.nm.gr #0.5R xs ** au_opened tok (reveal xs));
         false
       }
     };

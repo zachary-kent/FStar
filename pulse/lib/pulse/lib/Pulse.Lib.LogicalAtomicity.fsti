@@ -50,7 +50,7 @@ val au_available (#a:Type0) (#b:Type0)
 (** AU has been opened: α(x) extracted, awaiting abort or commit. *)
 val au_opened (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi) : slprop
+    (tok : au_token a b alpha beta phi) (x : a) : slprop
 
 (** Introduction (Iris aupd_intro): deposit α(x₀) to create AU. *)
 ghost fn au_intro (#a:Type0) (#b:Type0)
@@ -67,14 +67,14 @@ ghost fn au_open (#a:Type0) (#b:Type0)
   opens [au_iname tok]
   requires au_available tok ** later_credit 1
   returns x : erased a
-  ensures alpha (reveal x) ** au_opened tok
+  ensures alpha (reveal x) ** au_opened tok (reveal x)
 
 (** Elimination — abort (Iris aupd_aacc, abort branch): α(x) ∗ handle → AU *)
 ghost fn au_abort (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi) (x : erased a)
   opens [au_iname tok]
-  requires alpha (reveal x) ** au_opened tok ** later_credit 1
+  requires alpha (reveal x) ** au_opened tok (reveal x) ** later_credit 1
   ensures au_available tok
 
 (** Elimination — commit (Iris aupd_aacc, commit branch): β(x,y) ∗ handle → Φ(x,y)
@@ -86,7 +86,7 @@ ghost fn au_commit (#a:Type0) (#b:Type0)
     (cfn : unit -> stt_ghost unit emp_inames
         (beta (reveal x) (reveal y))
         (fun _ -> phi (reveal x) (reveal y)))
-  requires beta (reveal x) (reveal y) ** au_opened tok
+  requires beta (reveal x) (reveal y) ** au_opened tok (reveal x)
   ensures phi (reveal x) (reveal y)
 
 (** LAT Elimination Rule.
