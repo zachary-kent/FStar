@@ -92,3 +92,31 @@ atomic fn cas_box (r:B.box U32.t) (u v:U32.t) (#i:erased U32.t)
     b
   }
 }
+
+(** FAA on box: read + add_mod + write via ref conversion *)
+fn faa_box_impl (r:B.box U32.t) (delta:U32.t) (#i:erased U32.t)
+  requires r |-> i
+  returns old : U32.t
+  ensures r |-> U32.add_mod old delta ** pure (old == reveal i)
+{
+  B.to_ref_pts_to r;
+  let old = Pulse.Lib.Reference.read (B.box_to_ref r);
+  Pulse.Lib.Reference.write (B.box_to_ref r) (U32.add_mod old delta);
+  B.to_box_pts_to r;
+  old
+}
+
+let faa_box r delta #i = Pulse.Lib.Core.as_atomic _ _ (faa_box_impl r delta #i)
+
+(** FAA on ref: read + add_mod + write, lifted to atomic *)
+fn faa_impl (r:ref U32.t) (delta:U32.t) (#i:erased U32.t)
+  requires pts_to r i
+  returns old : U32.t
+  ensures pts_to r (hide (U32.add_mod old delta)) ** pure (old == reveal i)
+{
+  let old = !r;
+  r := U32.add_mod old delta;
+  old
+}
+
+let faa r delta #i = Pulse.Lib.Core.as_atomic _ _ (faa_impl r delta #i)

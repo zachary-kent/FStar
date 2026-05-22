@@ -64,3 +64,16 @@ atomic fn cas_box (r:B.box U32.t) (u v:U32.t) (#i:erased U32.t)
   requires r |-> i
   returns b: bool
   ensures cond b ((r |-> v) ** pure (reveal i == u)) (r |-> i)
+
+(** Fetch-and-add on box U32.t: atomically reads, adds delta, writes back.
+    Returns the OLD value (before addition). Uses wrapping addition. *)
+val faa_box (r:B.box U32.t) (delta:U32.t) (#i:erased U32.t)
+  : stt_atomic U32.t #Observable emp_inames
+    (r |-> i)
+    (fun old -> r |-> U32.add_mod old delta ** pure (old == reveal i))
+
+(** Fetch-and-add on ref U32.t *)
+val faa (r:ref U32.t) (delta:U32.t) (#i:erased U32.t)
+  : stt_atomic U32.t #Observable emp_inames
+    (pts_to r i)
+    (fun old -> pts_to r (hide (U32.add_mod old delta)) ** pure (old == reveal i))
