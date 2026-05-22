@@ -1,18 +1,12 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Atomic Snapshot — ported from Iris logatom/snapshot.
+(** Atomic Snapshot — inspired by Iris logatom/snapshot.
     
-    An atomic snapshot provides:
-    - write(p, v): atomically update the snapshot value
-    - read(p): atomically read the snapshot value
-    - read_with(p, l): atomically read BOTH the snapshot value and *l
-    
-    The key challenge is read_with: it must atomically observe both
-    the snapshot and a separate location, even though the implementation
-    reads them sequentially. This uses a retry loop that checks if
-    the snapshot changed between the two reads.
-    
-    Simplified from Iris (which uses prophecy variables for read_with's
-    linearization point). Here we use a timestamp-based approach. *)
+    SIMPLIFIED VERSION: write uses a two-phase protocol (FAA version,
+    then write value) rather than Iris's single-CAS pointer indirection.
+    read_with uses version-number retry instead of Iris's prophecy-based
+    linearization. The Iris version uses prophecy variables to commit
+    the AU at the read of *l (in the middle of read_with), which
+    requires Resolve coupled to a program step. *)
 module PulseTutorial.AtomicSnapshot
 #lang-pulse
 open Pulse.Lib.Pervasives

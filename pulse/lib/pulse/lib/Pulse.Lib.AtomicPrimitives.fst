@@ -1,19 +1,13 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Atomic Primitives — the trusted kernel of atomic operations.
+(** Atomic Primitives — model implementation.
 
-    This module is the ONLY place where as_atomic may appear.
-    Each operation corresponds to a single Iris/HeapLang atomic step.
+    This file provides a SEQUENTIAL MODEL of atomic operations using
+    as_atomic. It is used only for F* type-checking.
+    On real hardware, these operations are implemented by atomic
+    machine instructions (LOCK CMPXCHG, LOCK XADD, etc.).
 
-    HeapLang atomic steps (each individually atomic, no interleaving):
-      - Load:  !l
-      - Store: l <- v
-      - Alloc: ref v
-      - Free:  free l
-      - CAS:   CAS l expected new  (compare-and-swap)
-      - FAA:   FAA l delta          (fetch-and-add, U32 only)
-
-    All other files must compose these primitives rather than using
-    as_atomic directly. *)
+    The trusted interface is in .fsti — clients depend on those
+    opaque specs, not on this implementation. *)
 module Pulse.Lib.AtomicPrimitives
 #lang-pulse
 
@@ -69,11 +63,8 @@ let atomic_alloc (#a:Type0) (x : a)
   = Pulse.Lib.Core.as_atomic _ _ (atomic_alloc_impl x)
 
 (* ================================================================ *)
-(* CAS — compare-and-swap on a box (generic, needs decidable eq)    *)
-(* HeapLang: CAS l expected new                                     *)
+(* CAS — compare-and-swap (eqtype, model implementation)            *)
 (* ================================================================ *)
-
-let cond b (p q:slprop) = if b then p else q
 
 fn atomic_cas_impl (#a:eqtype) (r : B.box a) (expected new_val : a) (#cur : erased a)
   requires r |-> cur
@@ -100,27 +91,7 @@ let atomic_cas (#a:eqtype) (r : B.box a) (expected new_val : a) (#cur : erased a
   = Pulse.Lib.Core.as_atomic _ _ (atomic_cas_impl r expected new_val #cur)
 
 (* ================================================================ *)
-(* FAA — fetch-and-add on a box U32.t                               *)
-(* HeapLang: FAA l delta                                            *)
-(* ================================================================ *)
-
-fn atomic_faa_impl (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
-  requires r |-> cur
-  returns old : U32.t
-  ensures r |-> U32.add_mod old delta ** pure (old == reveal cur)
-{
-  let old = B.op_Bang r;
-  B.op_Colon_Equals r (U32.add_mod old delta);
-  old
-}
-
-let atomic_faa (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
-  : stt_atomic U32.t #Observable emp_inames
-    (B.pts_to r cur) (fun old -> B.pts_to r (U32.add_mod old delta) ** pure (old == reveal cur))
-  = Pulse.Lib.Core.as_atomic _ _ (atomic_faa_impl r delta #cur)
-
-(* ================================================================ *)
-(* Convenience: CAS specialized for box_eq (pointer equality)       *)
+(* CAS — pointer equality variant (box_eq)                          *)
 (* ================================================================ *)
 
 fn atomic_cas_box_impl (#a:Type0) (r : B.box (B.box a))
@@ -148,3 +119,23 @@ let atomic_cas_box (#a:Type0) (r : B.box (B.box a))
     (fun b -> cond b (B.pts_to r new_val ** pure (reveal cur == expected))
                      (B.pts_to r cur))
   = Pulse.Lib.Core.as_atomic _ _ (atomic_cas_box_impl r expected new_val #cur)
+
+(* ================================================================ *)
+(* FAA — fetch-and-add on a box U32.t                               *)
+(* HeapLang: FAA l delta                                            *)
+(* ================================================================ *)
+
+fn atomic_faa_impl (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
+  requires r |-> cur
+  returns old : U32.t
+  ensures r |-> U32.add_mod old delta ** pure (old == reveal cur)
+{
+  let old = B.op_Bang r;
+  B.op_Colon_Equals r (U32.add_mod old delta);
+  old
+}
+
+let atomic_faa (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
+  : stt_atomic U32.t #Observable emp_inames
+    (B.pts_to r cur) (fun old -> B.pts_to r (U32.add_mod old delta) ** pure (old == reveal cur))
+  = Pulse.Lib.Core.as_atomic _ _ (atomic_faa_impl r delta #cur)
