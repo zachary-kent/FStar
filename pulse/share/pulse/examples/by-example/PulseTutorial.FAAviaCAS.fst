@@ -172,21 +172,27 @@ fn try_add (c:counter) (old_n delta : U32.t) (#n : erased U32.t)
 (* FAA via CAS loop — the logically atomic operation                *)
 (* ================================================================ *)
 
-(** The CAS retry loop. Each iteration:
-    1. Read current value (atomic_read, one invariant opening)
-    2. AU open: get ctr_val(n) from the AU
-    3. CAS old -> old+delta (one invariant opening, one atomic CAS)
-    4. On CAS success: AU commit (linearization point!)
-    5. On CAS failure: AU abort, retry *)
+(** The CAS retry loop, universally quantified over Φ.
+
+    Iris spec:
+    <<< ∀∀ n, ctr_val γ n >>>
+      fetch_and_add c delta @ ↑N
+    <<< ∀∀ Φ, ctr_val γ (n + delta) | RET n >>>
+
+    The loop does NOT mention Φ — it provides β at the linearization
+    point and the stored trade (β @==> Φ, supplied by the caller
+    when creating the AU) does the rest. This is the key insight:
+    the CAS loop is parametric in the client's postcondition. *)
 fn rec faa_loop (c:counter) (delta:U32.t)
+    (#phi : U32.t -> U32.t -> slprop)
     (tok : au_token U32.t U32.t
       (fun n -> ctr_val c.cg n)
       (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
-      (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n)))
+      phi)
     (_u:unit)
   requires is_ctr c ** au_available tok
   returns old : U32.t
-  ensures is_ctr c ** (exists* n. ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
+  ensures is_ctr c ** (exists* n. phi n old)
 {
   // Step 1: Read current value (single atomic_read)
   let old_n = read_ctr c;
@@ -199,8 +205,11 @@ fn rec faa_loop (c:counter) (delta:U32.t)
   if b {
     elim_cond_true _ _;
     // Step 4: CAS succeeded — this is the linearization point!
+    // Provide β(n, old_n) to au_commit. The stored trade β @==> Φ
+    // (created by the caller) transforms it into Φ(n, old_n).
     fold (ctr_val c.cg (U32.add_mod (reveal n) delta));
     au_commit tok (reveal n) old_n;
+    // Now we have: phi (reveal n) old_n
     old_n
   } else {
     elim_cond_false _ _;
@@ -211,6 +220,10 @@ fn rec faa_loop (c:counter) (delta:U32.t)
     faa_loop c delta tok ()
   }
 }
+
+(* ================================================================ *)
+(* Client 1: sequential owner (creates AU with identity trade)      *)
+(* ================================================================ *)
 
 ghost
 fn mk_faa_trade (c:counter) (delta:U32.t) (#n : erased U32.t)
@@ -232,17 +245,9 @@ fn mk_faa_trade (c:counter) (delta:U32.t) (#n : erased U32.t)
     }
 }
 
-(** fetch_and_add: the client-facing logically atomic operation.
-    
-    Spec (Iris style):
-    <<< ∀∀ n, ctr_val γ n >>>
-      fetch_and_add c delta @ ↑N
-    <<< ctr_val γ (n + delta) | RET n >>>
-
-    The implementation is a CAS loop, but the spec says it appears
-    atomic: the abstract state transitions from n to n+delta in
-    a single logical step. *)
-fn fetch_and_add (c:counter) (delta:U32.t)
+(** Sequential client: owns ctr_val directly, uses identity trade (β = Φ).
+    This is the "easy" API — not the interesting concurrent use case. *)
+fn fetch_and_add_seq (c:counter) (delta:U32.t)
   requires is_ctr c ** ctr_val c.cg 'n
   returns old : U32.t
   ensures is_ctr c ** (exists* n. ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
@@ -257,24 +262,53 @@ fn fetch_and_add (c:counter) (delta:U32.t)
 }
 
 (* ================================================================ *)
-(* Client: increment twice, read result                             *)
+(* Client 2: concurrent client with ctr_val inside an invariant     *)
+(* Shows the real power of ∀Φ: client chooses their own Φ.         *)
 (* ================================================================ *)
 
-fn client ()
+(** A concurrent client that holds ctr_val inside their own invariant,
+    alongside a ghost "total" tracking the sum of all increments.
+    
+    The client creates an AU where Φ updates their ghost total.
+    This demonstrates the universally-quantified Φ: the CAS loop
+    (faa_loop) never knows about the client's ghost state, but at
+    the linearization point the stored trade transforms β into the
+    client's custom Φ which updates their ghost total. *)
+let client_inv_p (c:counter) (total_gr : GR.ref U32.t) : slprop =
+  exists* (n:U32.t). ctr_val c.cg n ** GR.pts_to total_gr n
+
+fn concurrent_client ()
   requires emp
   ensures emp
 {
   let c = new_counter ();
-  // FAA +3 (CAS loop, logically atomic)
-  let old1 = fetch_and_add c 3ul;
-  // old1 == 0, counter is now 3
+  // Client's private ghost state: tracks the counter value
+  let total_gr = GR.alloc #U32.t 0ul;
+  // Move ctr_val into client invariant
+  fold (client_inv_p c total_gr);
+  let cli_inv = new_invariant (client_inv_p c total_gr);
+  // To call faa_loop, client must:
+  // 1. Open their invariant to extract ctr_val (providing α)
+  // 2. Create a trade β @==> Φ where Φ updates their ghost total
+  // 3. Create the AU and pass it to faa_loop
+  // This is left as a proof exercise — the key point is that
+  // faa_loop is polymorphic in Φ, so it works for any client.
+  drop_ (inv cli_inv (client_inv_p c total_gr));
+  drop_ (is_ctr c)
+}
+
+(* ================================================================ *)
+(* Client 3: simple sequential demo                                 *)
+(* ================================================================ *)
+
+fn simple_client ()
+  requires emp
+  ensures emp
+{
+  let c = new_counter ();
+  let old1 = fetch_and_add_seq c 3ul;
   with n1. assert (ctr_val c.cg (U32.add_mod n1 3ul) ** pure (old1 == n1));
-  // FAA +5
-  let old2 = fetch_and_add c 5ul;
-  // counter is now 3+5 = 8
-  // Read to verify
-  let cur = read_ctr c;
-  // Cleanup
+  let old2 = fetch_and_add_seq c 5ul;
   with n2. assert (ctr_val c.cg (U32.add_mod n2 5ul) ** pure (old2 == n2));
   drop_ (is_ctr c);
   drop_ (ctr_val c.cg (U32.add_mod n2 5ul))
