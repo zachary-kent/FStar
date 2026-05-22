@@ -9,7 +9,7 @@
     - Allocation happens OUTSIDE the invariant
     - Only CAS on the head pointer is inside the invariant
     - Ghost state tracks abstract list contents
-    - Recursive phys_list predicate owned by the invariant *)
+    - Persistent is_list predicate (∃q. l↦{q}v) — duplicable, Iris-faithful *)
 module PulseTutorial.TreiberStack2
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -54,23 +54,88 @@ noeq type node (t:Type0) = { value : t; nd_next : B.box (node t); }
 (* Null sentinel — using B.null *)
 let is_null_node (#t:Type0) (n : B.box (node t)) : bool = B.is_null n
 
-(* Physical list: recursive predicate owned by the invariant.
-   phys_list null [] = emp
-   phys_list p (x::xs) = p |-> {value=x; nd_next=tl} ** phys_list tl xs *)
-let rec phys_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
+(* ================================================================ *)
+(* Persistent points-to: ∃ q, l ↦{q} v  (Iris l ↦□ v)             *)
+(* Duplicable because any fraction can be split: q → q/2 + q/2     *)
+(* ================================================================ *)
+
+let persistent_pts_to (#a:Type0) (r : B.box a) (v : a) : slprop =
+  exists* (p:perm). B.pts_to r #p v
+
+ghost fn make_persistent (#a:Type0) (r : B.box a) (#v : erased a) (#p:perm)
+  requires B.pts_to r #p v
+  ensures persistent_pts_to r (reveal v)
+{
+  fold (persistent_pts_to r (reveal v))
+}
+
+ghost fn dup_persistent (#a:Type0) (r : B.box a) (#v : a)
+  requires persistent_pts_to r v
+  ensures persistent_pts_to r v ** persistent_pts_to r v
+{
+  unfold persistent_pts_to;
+  B.share r;
+  fold (persistent_pts_to r v);
+  fold (persistent_pts_to r v)
+}
+
+fn read_persistent (#a:Type0) (r : B.box a) (#v : a)
+  preserves persistent_pts_to r v
+  returns x : a
+  ensures pure (x == v)
+{
+  dup_persistent r;
+  unfold persistent_pts_to;
+  with p. assert (B.pts_to r #p v);
+  let x = B.op_Bang r;
+  drop_ (B.pts_to r #p v);
+  x
+}
+
+(* ================================================================ *)
+(* Persistent is_list: uses persistent_pts_to for node contents     *)
+(* Duplicable — can be used outside the invariant                   *)
+(* ================================================================ *)
+
+let rec is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
   : Tot slprop (decreases xs) =
   match xs with
   | [] -> pure (hd == B.null)
   | x :: rest -> exists* (nd : node t).
-      B.pts_to hd nd ** pure (nd.value == x) ** phys_list nd.nd_next rest
+      persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest
 
-(* ================================================================ *)
-(* Stack representation                                             *)
-(* ================================================================ *)
+ghost fn rec dup_is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
+  requires is_list hd xs
+  ensures is_list hd xs ** is_list hd xs
+  decreases xs
+{
+  match xs {
+    Nil -> {
+      unfold is_list;
+      fold (is_list #t hd []);
+      rewrite (is_list #t hd []) as (is_list hd xs);
+      fold (is_list #t hd []);
+      rewrite (is_list #t hd []) as (is_list hd xs)
+    }
+    Cons x rest -> {
+      unfold is_list;
+      with nd. assert (persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
+      dup_persistent hd #nd;
+      dup_is_list nd.nd_next rest;
+      fold (is_list hd (x :: rest));
+      rewrite (is_list hd (x :: rest)) as (is_list hd xs);
+      fold (is_list hd (x :: rest));
+      rewrite (is_list hd (x :: rest)) as (is_list hd xs)
+    }
+  }
+}
+
+(* Stack invariant: uses persistent is_list directly.
+   Nodes are immutable after allocation — persistent ownership suffices.
+   is_list is duplicable, so we can extract copies outside the invariant. *)
 
 noeq type ts_ghost (t:Type0) = { gr : GR.ref (list t); }
 
-(* The head is a box (box (node t)) — a mutable pointer to the first node *)
 noeq type tstack2 (t:Type0) = {
   head : B.box (B.box (node t));
   nm   : ts_ghost t;
@@ -79,10 +144,9 @@ noeq type tstack2 (t:Type0) = {
 
 let scont2 (#t:Type0) (g:ts_ghost t) (xs:list t) : slprop = GR.pts_to g.gr #0.5R xs
 
-(* Stack invariant: head points to a physical list matching ghost state *)
 let sinv_inner (#t:Type0) (head : B.box (B.box (node t))) (gr : GR.ref (list t)) : slprop =
   exists* (hd : B.box (node t)) (xs : list t).
-    B.pts_to head hd ** phys_list hd xs ** GR.pts_to gr #0.5R xs
+    B.pts_to head hd ** is_list hd xs ** GR.pts_to gr #0.5R xs
 
 let sinv (#t:Type0) (s:tstack2 t) : slprop = sinv_inner s.head s.nm.gr
 let is_ts2 (#t:Type0) (s:tstack2 t) : slprop = inv s.inm (sinv s)
@@ -102,7 +166,7 @@ fn new_stack2 (#t:Type0) ()
   let nm : ts_ghost t = { gr };
   rewrite (GR.pts_to gr #0.5R []) as (GR.pts_to nm.gr #0.5R []);
   rewrite (GR.pts_to gr #0.5R []) as (scont2 nm []);
-  fold (phys_list #t (B.null #(node t)) []);
+  fold (is_list #t (B.null #(node t)) []);
   fold (sinv_inner head nm.gr);
   let inm = new_invariant (sinv_inner head nm.gr);
   let s : tstack2 t = { head; nm; inm };
@@ -136,47 +200,42 @@ fn read_head2 (#t:Type0) (s:tstack2 t)
 }
 
 (** try_push2: CAS head from old_hd to new_node.
-    phys_list stays INSIDE the invariant — never leaves.
-    The new_node is passed in (allocated outside).
-    On CAS success: new_node is linked into phys_list inside invariant.
-    On CAS failure: new_node is returned to caller.
+    is_list (persistent) stays in the invariant — duplicable.
+    The new_node's pts_to is made persistent before linking.
     Faithful to Iris: one atomic CAS per invariant opening. *)
 fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
     (#xs : erased (list t))
   requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
-           new_node |-> ({ value = v; nd_next = old_hd })
+           persistent_pts_to new_node ({ value = v; nd_next = old_hd })
   returns b : bool
   ensures AP.cond b
     (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
-    (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
-     new_node |-> ({ value = v; nd_next = old_hd }))
+    (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs)
 {
   unfold is_ts2;
   let b = with_invariants bool emp_inames s.inm (sinv s)
     (GR.pts_to s.nm.gr #0.5R xs **
-     new_node |-> ({ value = v; nd_next = old_hd }))
+     persistent_pts_to new_node ({ value = v; nd_next = old_hd }))
     (fun b -> AP.cond b
       (GR.pts_to s.nm.gr #0.5R (v :: xs))
-      (GR.pts_to s.nm.gr #0.5R xs **
-       new_node |-> ({ value = v; nd_next = old_hd })))
+      (GR.pts_to s.nm.gr #0.5R xs))
   fn _ {
     unfold sinv; unfold sinv_inner;
-    // Single atomic step: CAS head from old_hd to new_node
     let b = atomic_cas_box s.head old_hd new_node;
     if b {
       elim_cond_true _ _;
-      // CAS succeeded: old_hd was the head, now head = new_node
       with hd0 xs0. assert (
         B.pts_to s.head new_node ** pure (reveal (hide hd0) == old_hd) **
-        phys_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
+        is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
         GR.pts_to s.nm.gr #0.5R xs **
-        new_node |-> ({ value = v; nd_next = old_hd }));
+        persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
       GR.pts_to_injective_eq s.nm.gr;
       rewrite each xs0 as (reveal xs);
       rewrite each hd0 as old_hd;
-      // Build phys_list new_node (v :: xs):
-      // new_node |-> {value=v, next=old_hd} ** phys_list old_hd xs
-      fold (phys_list new_node (v :: reveal xs));
+      // Build is_list new_node (v :: xs) from:
+      //   persistent_pts_to new_node {value=v, next=old_hd}
+      //   is_list old_hd xs (from invariant, persistent)
+      fold (is_list new_node (v :: reveal xs));
       // Update ghost
       GR.gather s.nm.gr;
       GR.(s.nm.gr := v :: (reveal xs));
@@ -184,16 +243,16 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
       fold (sinv_inner s.head s.nm.gr); fold (sinv s);
       fold (AP.cond true
         (GR.pts_to s.nm.gr #0.5R (v :: xs))
-        (GR.pts_to s.nm.gr #0.5R xs **
-         new_node |-> ({ value = v; nd_next = old_hd })));
+        (GR.pts_to s.nm.gr #0.5R xs));
       true
     } else {
       elim_cond_false _ _;
+      // Drop the persistent_pts_to (it's duplicable, safe to drop)
+      drop_ (persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
       fold (sinv_inner s.head s.nm.gr); fold (sinv s);
       fold (AP.cond false
         (GR.pts_to s.nm.gr #0.5R (v :: xs))
-        (GR.pts_to s.nm.gr #0.5R xs **
-         new_node |-> ({ value = v; nd_next = old_hd })));
+        (GR.pts_to s.nm.gr #0.5R xs));
       false
     }
   };
@@ -202,16 +261,14 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
     fold (is_ts2 s);
     intro_cond_true
       (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
-       new_node |-> ({ value = v; nd_next = old_hd }));
+      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs);
     true
   } else {
     elim_cond_false _ _;
     fold (is_ts2 s);
     intro_cond_false
       (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
-       new_node |-> ({ value = v; nd_next = old_hd }));
+      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs);
     false
   }
 }
@@ -231,6 +288,8 @@ fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
   let old_hd = read_head2 s;
   // Step 2: Allocate new node (OUTSIDE invariant)
   let new_node = atomic_alloc ({ value = v; nd_next = old_hd } <: node t);
+  // Make node persistent (Iris: pointsto_persist)
+  make_persistent new_node;
   // Step 3: Open AU
   later_credit_buy 1;
   let xs = au_open tok;
@@ -246,8 +305,6 @@ fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
     fold (scont2 s.nm xs);
     later_credit_buy 1;
     au_abort tok (reveal xs);
-    // Drop the failed node (affine/GC)
-    drop_ (B.pts_to new_node ({ value = v; nd_next = old_hd }));
     push_loop2 s v tok ()
   }
 }
