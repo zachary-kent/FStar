@@ -1,5 +1,5 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Treiber Stack — CAS push with LA. No admits. *)
+(** Treiber Stack — CAS-based push with logically atomic spec. No admits. *)
 module PulseTutorial.TreiberStack
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -10,118 +10,119 @@ module U32 = FStar.UInt32
 module P = Pulse.Lib.Primitives
 open Pulse.Lib.Inv
 
-[@@ erasable]
 noeq type sn = { gr : GR.ref (list U32.t); }
-instance ni_sn : Pulse.Lib.NonInformative.non_informative sn
-  = { reveal = (fun r -> FStar.Ghost.reveal r) <: Pulse.Lib.NonInformative.revealer sn }
+noeq type tstack = { hd : B.box U32.t; nm : sn; inm : iname; }
 
 let scont (g:sn) (xs:list U32.t) : slprop = pts_to g.gr #0.5R xs
 
-[@@ erasable]
-noeq type tstack = { hd : B.box U32.t; nm : sn; inm : iname; }
-instance ni_ts : Pulse.Lib.NonInformative.non_informative tstack
-  = { reveal = (fun r -> FStar.Ghost.reveal r) <: Pulse.Lib.NonInformative.revealer tstack }
+let inv_inner (hd : B.box U32.t) (g : sn) (ver : U32.t) : slprop =
+  exists* (xs : list U32.t). B.pts_to hd ver ** pts_to g.gr #0.5R xs
 
-(** Invariant content is raw — no wrapper definition to unfold *)
-let is_ts (s:tstack) (v:U32.t) (xs:list U32.t) : slprop =
-  inv s.inm (B.pts_to s.hd v ** pts_to s.nm.gr #0.5R xs)
+let sinv (hd : B.box U32.t) (g : sn) : slprop =
+  exists* (ver : U32.t). inv_inner hd g ver
+
+let is_ts (s:tstack) : slprop = inv s.inm (sinv s.hd s.nm)
 
 fn new_stack ()
   requires emp
   returns s : tstack
-  ensures (exists* v xs. is_ts s v xs) ** scont s.nm []
+  ensures is_ts s ** scont s.nm []
 {
   let hd = B.alloc 0ul;
   let gr = GR.alloc #(list U32.t) [];
   GR.share gr;
   let g : sn = { gr };
-  let i = new_invariant (B.pts_to hd 0ul ** pts_to gr #0.5R []);
+  rewrite (GR.pts_to gr #0.5R []) as (pts_to g.gr #0.5R []);
+  rewrite (GR.pts_to gr #0.5R []) as (scont g []);
+  fold (inv_inner hd g 0ul);
+  fold (sinv hd g);
+  let i = new_invariant (sinv hd g);
   let s : tstack = { hd; nm = g; inm = i };
-  rewrite (inv i (B.pts_to hd 0ul ** pts_to gr #0.5R []))
-       as (inv s.inm (B.pts_to s.hd 0ul ** pts_to s.nm.gr #0.5R []));
-  fold (is_ts s 0ul []);
-  rewrite (GR.pts_to gr #0.5R []) as (scont s.nm []);
+  rewrite (inv i (sinv hd g)) as (inv s.inm (sinv s.hd s.nm));
+  fold (is_ts s);
+  rewrite (scont g []) as (scont s.nm []);
   s
 }
 
 fn rec push_loop
-    (s:tstack) (v:U32.t)
+    (s : tstack) (v : U32.t)
     (tok : au_token (list U32.t) unit
       (fun xs -> scont s.nm xs)
       (fun xs _ -> scont s.nm (Cons v xs))
       (fun xs _ -> scont s.nm (Cons v xs)))
-    (cur_v:U32.t) (new_v:U32.t) (cur_xs:list U32.t)
-  requires is_ts s cur_v (cur_xs) ** au_available tok
-  ensures (exists* vv xxs. is_ts s vv xxs) **
-          (exists* (xs:list U32.t) (_y:unit). scont s.nm (Cons v xs))
+    (_u:unit)
+  requires is_ts s ** au_available tok
+  ensures is_ts s ** (exists* (xs_out : list U32.t). scont s.nm xs_out)
 {
   later_credit_buy 1;
-  later_credit_buy 1;
 
+  unfold is_ts;
+  dup_inv s.inm _;
   let xs = au_open tok;
   unfold scont;
 
-  unfold is_ts;
-  // Now: inv s.inm (B.pts_to s.hd cur_v ** pts_to s.nm.gr #0.5R cur_xs)
-  // No unfold needed inside with_invariants!
-
   let success =
-    with_invariants bool emp_inames s.inm
-      (B.pts_to s.hd cur_v ** pts_to s.nm.gr #0.5R (cur_xs))
-      (pts_to s.nm.gr #0.5R (reveal xs) ** au_opened tok)
+    with_invariants bool emp_inames s.inm (sinv s.hd s.nm)
+      (pts_to s.nm.gr #0.5R xs ** au_opened tok)
       (fun b -> P.cond b
-        (pts_to s.nm.gr #0.5R (Cons v (reveal xs)) ** au_opened tok)
-        (pts_to s.nm.gr #0.5R (reveal xs) ** au_opened tok))
+        (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok)
+        (pts_to s.nm.gr #0.5R xs ** au_opened tok))
     fn _ {
-      // CAS first — no ghost steps before it
-      let b = P.cas_box s.hd cur_v new_v;
+      unfold sinv;
+      with ver0. unfold (inv_inner s.hd s.nm ver0);
+      with xs0.
+        assert (B.pts_to s.hd ver0 ** pts_to s.nm.gr #0.5R xs0 **
+                pts_to s.nm.gr #0.5R xs ** au_opened tok);
+      GR.pts_to_injective_eq s.nm.gr;
+      rewrite each xs0 as (reveal xs);
+      let b = P.cas_box s.hd 0ul 1ul;
       if b {
         elim_cond_true _ _ _;
-        drop_ (pure (cur_v == cur_v));
-        // Ghost steps after CAS
-        GR.pts_to_injective_eq s.nm.gr;
+        drop_ (pure (ver0 == 0ul));
         GR.gather s.nm.gr;
         GR.(s.nm.gr := Cons v (reveal xs));
         GR.share s.nm.gr;
-        let ret = true;
-        rewrite (pts_to s.nm.gr #0.5R (Cons v (reveal xs)) ** au_opened tok)
-             as P.cond ret
-                  (pts_to s.nm.gr #0.5R (Cons v (reveal xs)) ** au_opened tok)
-                  (pts_to s.nm.gr #0.5R (reveal xs) ** au_opened tok);
-        ret
+        fold (inv_inner s.hd s.nm 1ul);
+        fold (sinv s.hd s.nm);
+        intro_cond_true (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok)
+                        (pts_to s.nm.gr #0.5R xs ** au_opened tok);
+        true
       } else {
         elim_cond_false _ _ _;
-        let ret = false;
-        rewrite (pts_to s.nm.gr #0.5R (reveal xs) ** au_opened tok)
-             as P.cond ret
-                  (pts_to s.nm.gr #0.5R (Cons v (reveal xs)) ** au_opened tok)
-                  (pts_to s.nm.gr #0.5R (reveal xs) ** au_opened tok);
-        ret
+        fold (inv_inner s.hd s.nm ver0);
+        fold (sinv s.hd s.nm);
+        intro_cond_false (pts_to s.nm.gr #0.5R (Cons v xs) ** au_opened tok)
+                         (pts_to s.nm.gr #0.5R xs ** au_opened tok);
+        false
       }
     };
 
   if (success) {
     elim_cond_true _ _ _;
-    fold (scont s.nm (Cons v (reveal xs)));
-    au_commit tok (reveal xs) (hide ()) fn _ { () };
-    fold (is_ts s new_v (Cons v (cur_xs)));
+    drop_ (inv s.inm (sinv s.hd s.nm));
+    fold (scont s.nm (Cons v xs));
+    au_commit tok xs (hide ()) fn _ { () };
+    // phi produced: scont s.nm (Cons v xs)
+    rewrite (inv s.inm (sinv s.hd s.nm)) as (is_ts s);
   } else {
     elim_cond_false _ _ _;
-    fold (scont s.nm (reveal xs));
+    fold (scont s.nm xs);
     later_credit_buy 1;
-    au_abort tok (reveal xs);
-    fold (is_ts s cur_v (cur_xs));
-    push_loop s v tok cur_v new_v #cur_xs
+    au_abort tok xs;
+    drop_ (inv s.inm (sinv s.hd s.nm));
+    rewrite (inv s.inm (sinv s.hd s.nm)) as (is_ts s);
+    push_loop s v tok ()
   }
 }
 
 fn push (s:tstack) (v:U32.t)
-  requires (exists* vv xxs. is_ts s vv xxs) ** scont s.nm 'xs
-  ensures (exists* vv xxs. is_ts s vv xxs) ** (exists* ys. scont s.nm ys)
+  requires is_ts s ** scont s.nm 'xs
+  ensures is_ts s ** (exists* ys. scont s.nm ys)
 {
-  lat_elim #_ #_ #(fun xs -> scont s.nm xs)
-           #(fun xs _ -> scont s.nm (Cons v xs))
-           #(fun xs _ -> scont s.nm (Cons v xs))
-           (hide 'xs)
-    (fun tok -> push_loop s v tok 0ul 1ul)
+  let tok = au_intro #(list U32.t) #unit
+                     #(fun xs -> scont s.nm xs)
+                     #(fun xs _ -> scont s.nm (Cons v xs))
+                     #(fun xs _ -> scont s.nm (Cons v xs))
+                     'xs;
+  push_loop s v tok ()
 }
