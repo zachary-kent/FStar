@@ -158,3 +158,29 @@ fn lat_elim (#a:Type0) (#b:Type0)
   let tok = au_intro #a #b #alpha #beta #phi x0;
   f tok
 }
+
+(** Iris aacc_aupd_commit (atomic.v line 387-400) *)
+fn lat_open (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (#result : a -> b -> slprop)
+    (x0 : erased a)
+    (f : (tok : au_token a b alpha beta phi) ->
+      stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
+    (split_phi : (x:erased a) -> (y:erased b) ->
+      stt_ghost unit emp_inames
+        (phi (reveal x) (reveal y))
+        (fun _ -> (exists* (x':a). alpha x') ** result (reveal x) (reveal y)))
+  requires alpha (reveal x0)
+  ensures (exists* (x:a). alpha x) ** (exists* (x:a) (y:b). result x y)
+{
+  // Step 1: au_intro (Iris aupd_intro, atomic.v line 276)
+  let tok = au_intro #a #b #alpha #beta #phi x0;
+
+  // Step 2: Call f (Iris: inner aacc, atomic.v line 311)
+  f tok;
+
+  // Step 3: Split phi (Iris: commit wand Φ→Φ', atomic.v line 321-322)
+  let x = elim_exists #a (fun (x:a) -> exists* (y:b). phi x y);
+  let y = elim_exists #b (fun (y:b) -> phi (reveal x) y);
+  split_phi x y;
+}

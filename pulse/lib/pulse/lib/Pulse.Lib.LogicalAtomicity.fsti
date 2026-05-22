@@ -101,3 +101,26 @@ fn lat_elim (#a:Type0) (#b:Type0)
       stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
   requires alpha (reveal x0)
   ensures (exists* (x:a) (y:b). phi x y)
+
+(** Invariant opening around logically atomic operations.
+    Iris aacc_aupd_commit (atomic.v line 387-400).
+
+    Given α(x₀), a logically atomic f, and a split_phi that
+    decomposes phi(x,y) into α(x') ** result(x,y):
+    - Client recovers the updated α (to close their invariant)
+    - Client gets result(x,y) as output
+
+    split_phi corresponds to Iris's wand Φ(x,y) ={E1}=∗ Φ'(x',y')
+    (atomic.v line 393). *)
+fn lat_open (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (#result : a -> b -> slprop)
+    (x0 : erased a)
+    (f : (tok : au_token a b alpha beta phi) ->
+      stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
+    (split_phi : (x:erased a) -> (y:erased b) ->
+      stt_ghost unit emp_inames
+        (phi (reveal x) (reveal y))
+        (fun _ -> (exists* (x':a). alpha x') ** result (reveal x) (reveal y)))
+  requires alpha (reveal x0)
+  ensures (exists* (x:a). alpha x) ** (exists* (x:a) (y:b). result x y)
