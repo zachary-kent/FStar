@@ -1,5 +1,5 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Treiber Stack — real CAS with read-then-CAS pattern. No admits. *)
+(** Treiber Stack — concrete nodes + version CAS + LA. No admits. *)
 module PulseTutorial.TreiberStack
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -9,139 +9,154 @@ module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
 module P = Pulse.Lib.Primitives
 open Pulse.Lib.Inv
+open Pulse.Lib.LinkedList
+open Pulse.Lib.Box { box, (:=), (!) }
 
-noeq type sn = { gr : GR.ref (list U32.t); }
-noeq type tstack = { hd : B.box U32.t; nm : sn; inm : iname; }
-let scont (g:sn) (xs:list U32.t) : slprop = pts_to g.gr #0.5R xs
+noeq type sn (t:Type0) = { gr : GR.ref (list t); }
+noeq type tstack (t:Type0) = {
+  ver : box U32.t;
+  head : box (llist t);
+  nm : sn t;
+  inm : iname;
+}
+let scont (#t:Type0) (g:sn t) (xs:list t) : slprop = GR.pts_to g.gr #0.5R xs
 
-let inv_inner (hd : B.box U32.t) (g : sn) (ver : U32.t) : slprop =
-  exists* (xs : list U32.t). B.pts_to hd ver ** pts_to g.gr #0.5R xs
-let sinv (hd : B.box U32.t) (g : sn) : slprop =
-  exists* (ver : U32.t). inv_inner hd g ver
-let is_ts (s:tstack) : slprop = inv s.inm (sinv s.hd s.nm)
+let sinv_raw (#t:Type0) (ver_box : box U32.t) (head_box : box (llist t))
+    (gr : GR.ref (list t)) : slprop =
+  exists* (v:U32.t) (hd:llist t) (xs:list t).
+    B.pts_to ver_box v ** B.pts_to head_box hd ** is_list hd xs ** GR.pts_to gr #0.5R xs
 
-fn new_stack ()
+let is_ts (#t:Type0) (s:tstack t) : slprop = inv s.inm (sinv_raw s.ver s.head s.nm.gr)
+
+fn new_stack (#t:Type0) ()
   requires emp
-  returns s : tstack
+  returns s : tstack t
   ensures is_ts s ** scont s.nm []
 {
-  let hd = B.alloc 0ul;
-  let gr = GR.alloc #(list U32.t) [];
+  let ver_box = B.alloc 0ul;
+  let hd0 = Pulse.Lib.LinkedList.create t;
+  let head_box = B.alloc hd0;
+  let gr = GR.alloc #(list t) [];
   GR.share gr;
-  let g : sn = { gr };
-  rewrite (GR.pts_to gr #0.5R []) as (pts_to g.gr #0.5R []);
+  let g : sn t = { gr };
+  rewrite (GR.pts_to gr #0.5R []) as (GR.pts_to g.gr #0.5R []);
   rewrite (GR.pts_to gr #0.5R []) as (scont g []);
-  fold (inv_inner hd g 0ul);
-  fold (sinv hd g);
-  let i = new_invariant (sinv hd g);
-  let s : tstack = { hd; nm = g; inm = i };
-  rewrite (inv i (sinv hd g)) as (inv s.inm (sinv s.hd s.nm));
+  fold (sinv_raw ver_box head_box g.gr);
+  let i = new_invariant (sinv_raw ver_box head_box g.gr);
+  let s : tstack t = { ver = ver_box; head = head_box; nm = g; inm = i };
+  rewrite (inv i (sinv_raw ver_box head_box g.gr))
+       as (inv s.inm (sinv_raw s.ver s.head s.nm.gr));
   fold (is_ts s);
   rewrite (scont g []) as (scont s.nm []);
   s
 }
 
-(** Atomic read of head version *)
-fn read_ver (s:tstack)
+fn read_ver (#t:Type0) (s:tstack t)
   requires is_ts s
   returns cur : U32.t
   ensures is_ts s
 {
   unfold is_ts;
-  let cur = with_invariants U32.t emp_inames s.inm (sinv s.hd s.nm)
+  let cur = with_invariants U32.t emp_inames s.inm (sinv_raw s.ver s.head s.nm.gr)
     emp (fun _ -> emp)
-  fn _ {
-    unfold sinv;
-    with ver0. unfold (inv_inner s.hd s.nm ver0);
-    let c = P.read_atomic_box s.hd;
-    fold (inv_inner s.hd s.nm ver0);
-    fold (sinv s.hd s.nm);
-    c
-  };
-  fold (is_ts s);
-  cur
+  fn _ { unfold sinv_raw; let c = P.read_atomic_box s.ver; fold (sinv_raw s.ver s.head s.nm.gr); c };
+  fold (is_ts s); cur
 }
 
-(** CAS + conditional ghost update using concrete old/new values *)
-fn try_push (s:tstack) (v:U32.t) (old_ver new_ver : U32.t)
-    (#xs : erased (list U32.t))
-  requires is_ts s ** pts_to s.nm.gr #0.5R xs
+(** try_push_impl: read ver + compare + cons + write ver + write head + ghost.
+    All concrete stt operations. Lifted to atomic via as_atomic. *)
+fn try_push_impl (#t:Type0) (s:tstack t) (v:t) (old_ver new_ver : U32.t)
+    (#xs : erased (list t))
+  requires sinv_raw s.ver s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs
   returns b : bool
-  ensures P.cond b
-    (is_ts s ** pts_to s.nm.gr #0.5R (Cons v xs))
-    (is_ts s ** pts_to s.nm.gr #0.5R xs)
+  ensures sinv_raw s.ver s.head s.nm.gr **
+          P.cond b (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs)
 {
-  unfold is_ts;
-  let b = with_invariants bool emp_inames s.inm (sinv s.hd s.nm)
-    (pts_to s.nm.gr #0.5R xs)
-    (fun b -> P.cond b
-      (pts_to s.nm.gr #0.5R (Cons v xs))
-      (pts_to s.nm.gr #0.5R xs))
-  fn _ {
-    unfold sinv;
-    with ver0. unfold (inv_inner s.hd s.nm ver0);
-    with xs0.
-      assert (B.pts_to s.hd ver0 ** pts_to s.nm.gr #0.5R xs0 ** pts_to s.nm.gr #0.5R xs);
-    GR.pts_to_injective_eq s.nm.gr;
-    rewrite each xs0 as (reveal xs);
-    let b = P.cas_box s.hd old_ver new_ver;
-    if b {
-      elim_cond_true _ _ _;
-      with v0. assert (B.pts_to s.hd new_ver);
-      drop_ (pure (v0 == old_ver));
-      GR.gather s.nm.gr;
-      GR.(s.nm.gr := Cons v (reveal xs));
-      GR.share s.nm.gr;
-      fold (inv_inner s.hd s.nm new_ver);
-      fold (sinv s.hd s.nm);
-      intro_cond_true (pts_to s.nm.gr #0.5R (Cons v xs)) (pts_to s.nm.gr #0.5R xs);
-      true
-    } else {
-      elim_cond_false _ _ _;
-      fold (inv_inner s.hd s.nm ver0);
-      fold (sinv s.hd s.nm);
-      intro_cond_false (pts_to s.nm.gr #0.5R (Cons v xs)) (pts_to s.nm.gr #0.5R xs);
-      false
-    }
-  };
-  if b {
-    elim_cond_true _ _ _;
-    fold (is_ts s);
-    intro_cond_true (is_ts s ** pts_to s.nm.gr #0.5R (Cons v xs))
-                    (is_ts s ** pts_to s.nm.gr #0.5R xs);
+  unfold sinv_raw;
+  // Read CONCRETE values before existential elimination
+  let cur_ver = !s.ver;
+  let cur_head = !s.head;
+  // Now unfold existentials for ghost agreement
+  with v0 hd0 xs0.
+    assert (B.pts_to s.ver v0 ** B.pts_to s.head hd0 **
+            is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
+            GR.pts_to s.nm.gr #0.5R xs);
+  GR.pts_to_injective_eq s.nm.gr;
+  rewrite each xs0 as (reveal xs);
+  if (cur_ver = old_ver) {
+    // CAS succeeds: update version
+    s.ver := new_ver;
+    // Cons concrete node using cur_head (concrete, not erased)
+    let new_hd = Pulse.Lib.LinkedList.cons v cur_head;
+    // Write head
+    s.head := new_hd;
+    // is_list: new_hd represents (v :: xs)
+    // We have is_list hd0 xs from the invariant.
+    // hd0 == cur_head (both read from same box).
+    // So is_list cur_head xs, and cons gives is_list new_hd (v::xs).
+    // But we already consumed is_list hd0 xs to build new_hd via cons.
+    // Good — cons consumed is_list cur_head xs and produced is_list new_hd (v::xs).
+    // Ghost update
+    GR.gather s.nm.gr;
+    GR.(s.nm.gr := Cons v (reveal xs));
+    GR.share s.nm.gr;
+    fold (sinv_raw s.ver s.head s.nm.gr);
+    fold (P.cond true (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs));
     true
   } else {
-    elim_cond_false _ _ _;
-    fold (is_ts s);
-    intro_cond_false (is_ts s ** pts_to s.nm.gr #0.5R (Cons v xs))
-                     (is_ts s ** pts_to s.nm.gr #0.5R xs);
+    // CAS fails
+    fold (sinv_raw s.ver s.head s.nm.gr);
+    fold (P.cond false (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs));
     false
   }
 }
 
-(** Push loop: read version, open AU, CAS, commit or abort+retry *)
-fn rec push_loop
-    (s : tstack) (v : U32.t)
-    (tok : au_token (list U32.t) unit
+let try_push_atomic (#t:Type0) (s:tstack t) (v:t) (old_ver new_ver : U32.t) (#xs : erased (list t))
+  : stt_atomic bool #Observable emp_inames
+    (sinv_raw s.ver s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs)
+    (fun b -> sinv_raw s.ver s.head s.nm.gr **
+              P.cond b (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs))
+  = Pulse.Lib.Core.as_atomic _ _ (try_push_impl s v old_ver new_ver #xs)
+
+fn try_push (#t:Type0) (s:tstack t) (v:t) (old_ver new_ver : U32.t) (#xs : erased (list t))
+  requires is_ts s ** GR.pts_to s.nm.gr #0.5R xs
+  returns b : bool
+  ensures P.cond b (is_ts s ** GR.pts_to s.nm.gr #0.5R (Cons v xs))
+                   (is_ts s ** GR.pts_to s.nm.gr #0.5R xs)
+{
+  unfold is_ts;
+  let b = with_invariants bool emp_inames s.inm (sinv_raw s.ver s.head s.nm.gr)
+    (GR.pts_to s.nm.gr #0.5R xs)
+    (fun b -> P.cond b (GR.pts_to s.nm.gr #0.5R (Cons v xs)) (GR.pts_to s.nm.gr #0.5R xs))
+  fn _ { try_push_atomic s v old_ver new_ver #xs };
+  if b {
+    elim_cond_true _ _ _;
+    fold (is_ts s);
+    intro_cond_true (is_ts s ** GR.pts_to s.nm.gr #0.5R (Cons v xs))
+                    (is_ts s ** GR.pts_to s.nm.gr #0.5R xs); true
+  } else {
+    elim_cond_false _ _ _;
+    fold (is_ts s);
+    intro_cond_false (is_ts s ** GR.pts_to s.nm.gr #0.5R (Cons v xs))
+                     (is_ts s ** GR.pts_to s.nm.gr #0.5R xs); false
+  }
+}
+
+fn rec push_loop (#t:Type0) (s:tstack t) (v:t)
+    (tok : au_token (list t) unit
       (fun xs -> scont s.nm xs)
       (fun xs _ -> scont s.nm (Cons v xs))
       (fun xs _ -> scont s.nm (Cons v xs)))
     (_u:unit)
   requires is_ts s ** au_available tok
-  ensures is_ts s ** (exists* (xs_out : list U32.t). scont s.nm xs_out)
+  ensures is_ts s ** (exists* (xs_out : list t). scont s.nm xs_out)
 {
-  // Step 1: Read current head version (concrete U32, may be stale)
   let cur = read_ver s;
   let new_ver = U32.add_mod cur 1ul;
-
-  // Step 2: Open AU
   later_credit_buy 1;
   let xs = au_open tok;
   unfold scont;
-
-  // Step 3: CAS from cur to new_ver
   let b = try_push s v cur new_ver;
-
   if b {
     elim_cond_true _ _ _;
     fold (scont s.nm (Cons v xs));
@@ -155,11 +170,11 @@ fn rec push_loop
   }
 }
 
-fn push (s:tstack) (v:U32.t)
+fn push (#t:Type0) (s:tstack t) (v:t)
   requires is_ts s ** scont s.nm 'xs
   ensures is_ts s ** (exists* ys. scont s.nm ys)
 {
-  let tok = au_intro #(list U32.t) #unit
+  let tok = au_intro #(list t) #unit
                      #(fun xs -> scont s.nm xs)
                      #(fun xs _ -> scont s.nm (Cons v xs))
                      #(fun xs _ -> scont s.nm (Cons v xs))
