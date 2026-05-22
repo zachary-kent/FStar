@@ -15,10 +15,30 @@ open Pulse.Lib.LogicalAtomicity
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
-module P = Pulse.Lib.Primitives
+module AP = Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
+
+ghost fn elim_cond_true (p q : slprop)
+  requires AP.cond true p q
+  ensures p
+{ unfold AP.cond }
+
+ghost fn elim_cond_false (p q : slprop)
+  requires AP.cond false p q
+  ensures q
+{ unfold AP.cond }
+
+ghost fn intro_cond_true (p q : slprop)
+  requires p
+  ensures AP.cond true p q
+{ fold (AP.cond true p q) }
+
+ghost fn intro_cond_false (p q : slprop)
+  requires q
+  ensures AP.cond false p q
+{ fold (AP.cond false p q) }
 
 (* ================================================================ *)
 (* RDCSS state                                                      *)
@@ -78,7 +98,7 @@ fn get_rdcss (s:rdcss_state)
     emp (fun _ -> emp)
   fn _ {
     unfold rdcss_inv_raw; unfold rdcss_inv_inner;
-    let n = P.read_atomic_box s.l_n;
+    let n = AP.atomic_read s.l_n;
     fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
     n
   };
@@ -109,14 +129,14 @@ fn rec rdcss_loop (s:rdcss_state) (m_val : U32.t) (m1 n1 n2 : U32.t)
     unfold is_rdcss; unfold rdcss_content;
     let b = with_invariants bool emp_inames s.ri (rdcss_inv_raw s)
       (GR.pts_to s.rg.gr #0.5R 'n)
-      (fun b -> P.cond b
+      (fun b -> AP.cond b
         (GR.pts_to s.rg.gr #0.5R n2)
         (GR.pts_to s.rg.gr #0.5R 'n))
     fn _ {
       unfold rdcss_inv_raw; unfold rdcss_inv_inner;
-      let b = P.cas_box s.l_n n1 n2;
+      let b = AP.atomic_cas s.l_n n1 n2;
       if b {
-        elim_cond_true _ _ _;
+        elim_cond_true _ _;
         with n0. assert (B.pts_to s.l_n n2 ** GR.pts_to s.rg.gr #0.5R n0 ** GR.pts_to s.rg.gr #0.5R 'n);
         GR.pts_to_injective_eq s.rg.gr;
         rewrite each n0 as (reveal 'n);
@@ -124,22 +144,22 @@ fn rec rdcss_loop (s:rdcss_state) (m_val : U32.t) (m1 n1 n2 : U32.t)
         GR.(s.rg.gr := n2);
         GR.share s.rg.gr;
         fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
-        fold (P.cond true (GR.pts_to s.rg.gr #0.5R n2) (GR.pts_to s.rg.gr #0.5R 'n));
+        fold (AP.cond true (GR.pts_to s.rg.gr #0.5R n2) (GR.pts_to s.rg.gr #0.5R 'n));
         true
       } else {
-        elim_cond_false _ _ _;
+        elim_cond_false _ _;
         fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
-        fold (P.cond false (GR.pts_to s.rg.gr #0.5R n2) (GR.pts_to s.rg.gr #0.5R 'n));
+        fold (AP.cond false (GR.pts_to s.rg.gr #0.5R n2) (GR.pts_to s.rg.gr #0.5R 'n));
         false
       }
     };
     if b {
-      elim_cond_true _ _ _;
+      elim_cond_true _ _;
       fold (rdcss_content s.rg n2);
       fold (is_rdcss s);
       cur_n  // return old value
     } else {
-      elim_cond_false _ _ _;
+      elim_cond_false _ _;
       fold (rdcss_content s.rg 'n);
       fold (is_rdcss s);
       // CAS failed, retry

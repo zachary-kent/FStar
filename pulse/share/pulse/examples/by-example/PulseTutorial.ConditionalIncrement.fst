@@ -19,10 +19,30 @@ open Pulse.Lib.Prophecy
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
-module P = Pulse.Lib.Primitives
+module AP = Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
+
+ghost fn elim_cond_true (p q : slprop)
+  requires AP.cond true p q
+  ensures p
+{ unfold AP.cond }
+
+ghost fn elim_cond_false (p q : slprop)
+  requires AP.cond false p q
+  ensures q
+{ unfold AP.cond }
+
+ghost fn intro_cond_true (p q : slprop)
+  requires p
+  ensures AP.cond true p q
+{ fold (AP.cond true p q) }
+
+ghost fn intro_cond_false (p q : slprop)
+  requires q
+  ensures AP.cond false p q
+{ fold (AP.cond false p q) }
 
 (* ================================================================ *)
 (* Counter + flag representation                                    *)
@@ -97,7 +117,7 @@ fn rec cinc_impl (s:cinc_state) (flag : B.box bool) (#flag_val : erased bool)
       emp (fun _ -> emp)
     fn _ {
       unfold cinc_inv_raw; unfold cinc_inv_inner;
-      let n = P.read_atomic_box s.counter;
+      let n = AP.atomic_read s.counter;
       fold (cinc_inv_inner s.counter s.cg.gr); fold (cinc_inv_raw s);
       n
     };
@@ -105,14 +125,14 @@ fn rec cinc_impl (s:cinc_state) (flag : B.box bool) (#flag_val : erased bool)
     unfold cinc_content;
     let b2 = with_invariants bool emp_inames s.ci (cinc_inv_raw s)
       (GR.pts_to s.cg.gr #0.5R 'n)
-      (fun b2 -> P.cond b2
+      (fun b2 -> AP.cond b2
         (GR.pts_to s.cg.gr #0.5R (U32.add_mod (reveal 'n) 1ul))
         (GR.pts_to s.cg.gr #0.5R 'n))
     fn _ {
       unfold cinc_inv_raw; unfold cinc_inv_inner;
-      let b2 = P.cas_box s.counter old_n (U32.add_mod old_n 1ul);
+      let b2 = AP.atomic_cas s.counter old_n (U32.add_mod old_n 1ul);
       if b2 {
-        elim_cond_true _ _ _;
+        elim_cond_true _ _;
         with n0. assert (B.pts_to s.counter (U32.add_mod old_n 1ul) ** GR.pts_to s.cg.gr #0.5R n0 ** GR.pts_to s.cg.gr #0.5R 'n);
         GR.pts_to_injective_eq s.cg.gr;
         rewrite each n0 as (reveal 'n);
@@ -120,25 +140,25 @@ fn rec cinc_impl (s:cinc_state) (flag : B.box bool) (#flag_val : erased bool)
         GR.(s.cg.gr := U32.add_mod (reveal 'n) 1ul);
         GR.share s.cg.gr;
         fold (cinc_inv_inner s.counter s.cg.gr); fold (cinc_inv_raw s);
-        fold (P.cond true
+        fold (AP.cond true
           (GR.pts_to s.cg.gr #0.5R (U32.add_mod (reveal 'n) 1ul))
           (GR.pts_to s.cg.gr #0.5R 'n));
         true
       } else {
-        elim_cond_false _ _ _;
+        elim_cond_false _ _;
         fold (cinc_inv_inner s.counter s.cg.gr); fold (cinc_inv_raw s);
-        fold (P.cond false
+        fold (AP.cond false
           (GR.pts_to s.cg.gr #0.5R (U32.add_mod (reveal 'n) 1ul))
           (GR.pts_to s.cg.gr #0.5R 'n));
         false
       }
     };
     if b2 {
-      elim_cond_true _ _ _;
+      elim_cond_true _ _;
       fold (cinc_content s.cg (U32.add_mod (reveal 'n) 1ul));
       fold (is_cinc s);
     } else {
-      elim_cond_false _ _ _;
+      elim_cond_false _ _;
       fold (cinc_content s.cg 'n);
       fold (is_cinc s);
       // CAS failed, retry

@@ -20,7 +20,7 @@ open Pulse.Lib.LogicalAtomicity
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
-module P = Pulse.Lib.Primitives
+module AP = Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
@@ -88,7 +88,7 @@ fn read_snap (s:snapshot)
     emp (fun _ -> emp)
   fn _ {
     unfold snap_inv_raw; unfold snap_inv_inner;
-    let v = P.read_atomic_box s.value;
+    let v = AP.atomic_read s.value;
     fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
     v
   };
@@ -115,7 +115,7 @@ fn write_snap (s:snapshot) (new_v : U32.t)
     emp (fun _ -> emp)
   fn _ {
     unfold snap_inv_raw; unfold snap_inv_inner;
-    let _ = P.faa_box s.version 1ul;
+    let _ = AP.atomic_faa s.version 1ul;
     fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
   };
   // Phase 2: write new value + update ghost (single write — x86 MOV)
@@ -125,7 +125,7 @@ fn write_snap (s:snapshot) (new_v : U32.t)
     (fun _ -> GR.pts_to s.sg.gr #0.5R new_v)
   fn _ {
     unfold snap_inv_raw; unfold snap_inv_inner;
-    P.write_atomic_box s.value new_v;
+    AP.atomic_write s.value new_v;
     with v0 ver0. assert (B.pts_to s.value new_v ** B.pts_to s.version ver0 **
       GR.pts_to s.sg.gr #0.5R v0 ** GR.pts_to s.sg.gr #0.5R 'v);
     GR.pts_to_injective_eq s.sg.gr;
@@ -172,7 +172,7 @@ fn rec read_with (s:snapshot) (l : B.box U32.t)
     emp (fun _ -> emp)
   fn _ {
     unfold snap_inv_raw; unfold snap_inv_inner;
-    let ver = P.read_atomic_box s.version;
+    let ver = AP.atomic_read s.version;
     fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
     ver
   };
@@ -187,7 +187,7 @@ fn rec read_with (s:snapshot) (l : B.box U32.t)
     emp (fun _ -> emp)
   fn _ {
     unfold snap_inv_raw; unfold snap_inv_inner;
-    let ver = P.read_atomic_box s.version;
+    let ver = AP.atomic_read s.version;
     fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
     ver
   };

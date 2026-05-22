@@ -8,11 +8,33 @@ open Pulse.Lib.LogicalAtomicity
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
-module P = Pulse.Lib.Primitives
+open Pulse.Lib.AtomicPrimitives
+module AP = Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
 open Pulse.Lib.Box { box, (:=), (!) }
+
+(* Use AtomicPrimitives.cond for consistency *)
+ghost fn elim_cond_true (p q : slprop)
+  requires AP.cond true p q
+  ensures p
+{ unfold AP.cond }
+
+ghost fn elim_cond_false (p q : slprop)
+  requires AP.cond false p q
+  ensures q
+{ unfold AP.cond }
+
+ghost fn intro_cond_true (p q : slprop)
+  requires p
+  ensures AP.cond true p q
+{ fold (AP.cond true p q) }
+
+ghost fn intro_cond_false (p q : slprop)
+  requires q
+  ensures AP.cond false p q
+{ fold (AP.cond false p q) }
 
 (* ================================================================ *)
 (* Counter representation                                           *)
@@ -70,7 +92,7 @@ fn get (c:counter)
     emp (fun _ -> emp)
   fn _ {
     unfold ctr_inv_raw;
-    let n = P.read_atomic_box c.loc;
+    let n = atomic_read c.loc;
     fold (ctr_inv_raw c.loc c.cg.gr);
     n
   };
@@ -82,71 +104,57 @@ fn get (c:counter)
 (* increment — CAS loop with LA spec                                *)
 (* ================================================================ *)
 
-(** try_incr: inside invariant, CAS old -> old+1, update ghost *)
-fn try_incr_impl (c:counter) (old_n : U32.t) (#n : erased U32.t)
-  requires ctr_inv_raw c.loc c.cg.gr ** GR.pts_to c.cg.gr #0.5R n
-  returns b : bool
-  ensures ctr_inv_raw c.loc c.cg.gr **
-    P.cond b
-      (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
-      (GR.pts_to c.cg.gr #0.5R n)
-{
-  unfold ctr_inv_raw;
-  let cur = P.read_atomic_box c.loc;
-  if (cur = old_n) {
-    with n0. assert (B.pts_to c.loc n0 ** GR.pts_to c.cg.gr #0.5R n0 ** GR.pts_to c.cg.gr #0.5R n);
-    GR.pts_to_injective_eq c.cg.gr;
-    rewrite each n0 as (reveal n);
-    P.write_atomic_box c.loc (U32.add_mod cur 1ul);
-    GR.gather c.cg.gr;
-    GR.(c.cg.gr := U32.add_mod (reveal n) 1ul);
-    GR.share c.cg.gr;
-    fold (ctr_inv_raw c.loc c.cg.gr);
-    fold (P.cond true
-      (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
-      (GR.pts_to c.cg.gr #0.5R n));
-    true
-  } else {
-    fold (ctr_inv_raw c.loc c.cg.gr);
-    fold (P.cond false
-      (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
-      (GR.pts_to c.cg.gr #0.5R n));
-    false
-  }
-}
-
-let try_incr_atomic (c:counter) (old_n : U32.t) (#n : erased U32.t)
-  : stt_atomic bool #Observable emp_inames
-    (ctr_inv_raw c.loc c.cg.gr ** GR.pts_to c.cg.gr #0.5R n)
-    (fun b -> ctr_inv_raw c.loc c.cg.gr **
-      P.cond b
-        (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
-        (GR.pts_to c.cg.gr #0.5R n))
-  = Pulse.Lib.Core.as_atomic _ _ (try_incr_impl c old_n #n)
-
 fn try_incr (c:counter) (old_n : U32.t) (#n : erased U32.t)
   requires is_ctr c ** GR.pts_to c.cg.gr #0.5R n
   returns b : bool
-  ensures P.cond b
+  ensures AP.cond b
     (is_ctr c ** GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
     (is_ctr c ** GR.pts_to c.cg.gr #0.5R n)
 {
   unfold is_ctr;
   let b = with_invariants bool emp_inames c.ci (ctr_inv_raw c.loc c.cg.gr)
     (GR.pts_to c.cg.gr #0.5R n)
-    (fun b -> P.cond b
+    (fun b -> AP.cond b
       (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
       (GR.pts_to c.cg.gr #0.5R n))
-  fn _ { try_incr_atomic c old_n #n };
+  fn _ {
+    unfold ctr_inv_raw;
+    let b = atomic_cas c.loc old_n (U32.add_mod old_n 1ul);
+    if b {
+      elim_cond_true _ _;
+      with n0. assert (
+        B.pts_to c.loc (U32.add_mod old_n 1ul) **
+        pure (reveal (hide n0) == old_n) **
+        GR.pts_to c.cg.gr #0.5R n0 **
+        GR.pts_to c.cg.gr #0.5R n);
+      GR.pts_to_injective_eq c.cg.gr;
+      rewrite each n0 as (reveal n);
+      GR.gather c.cg.gr;
+      GR.(c.cg.gr := U32.add_mod (reveal n) 1ul);
+      GR.share c.cg.gr;
+      fold (ctr_inv_raw c.loc c.cg.gr);
+      fold (AP.cond true
+        (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
+        (GR.pts_to c.cg.gr #0.5R n));
+      true
+    } else {
+      elim_cond_false _ _;
+      fold (ctr_inv_raw c.loc c.cg.gr);
+      fold (AP.cond false
+        (GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
+        (GR.pts_to c.cg.gr #0.5R n));
+      false
+    }
+  };
   if b {
-    elim_cond_true _ _ _;
+    elim_cond_true _ _;
     fold (is_ctr c);
     intro_cond_true
       (is_ctr c ** GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
       (is_ctr c ** GR.pts_to c.cg.gr #0.5R n);
     true
   } else {
-    elim_cond_false _ _ _;
+    elim_cond_false _ _;
     fold (is_ctr c);
     intro_cond_false
       (is_ctr c ** GR.pts_to c.cg.gr #0.5R (U32.add_mod (reveal n) 1ul))
@@ -171,11 +179,11 @@ fn rec incr_loop (c:counter)
   unfold ctr_content;
   let b = try_incr c old_n;
   if b {
-    elim_cond_true _ _ _;
+    elim_cond_true _ _;
     fold (ctr_content c.cg (U32.add_mod (reveal n) 1ul));
     au_commit tok (reveal n) ();
   } else {
-    elim_cond_false _ _ _;
+    elim_cond_false _ _;
     fold (ctr_content c.cg n);
     later_credit_buy 1;
     au_abort tok (reveal n);

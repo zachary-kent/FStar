@@ -15,7 +15,7 @@ open Pulse.Lib.LogicalAtomicity
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
-module P = Pulse.Lib.Primitives
+open Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
@@ -82,7 +82,7 @@ fn get_cwb (c:cwb_counter)
     emp (fun _ -> emp)
   fn _ {
     unfold cwb_inv_raw; unfold cwb_inv_inner;
-    let n = P.read_atomic_box c.primary;
+    let n = atomic_read c.primary;
     fold (cwb_inv_inner c.primary c.backup c.cg.gr); fold (cwb_inv_raw c);
     n
   };
@@ -104,7 +104,7 @@ fn get_backup (c:cwb_counter)
     emp (fun _ -> emp)
   fn _ {
     unfold cwb_inv_raw; unfold cwb_inv_inner;
-    let n = P.read_atomic_box c.backup;
+    let n = atomic_read c.backup;
     fold (cwb_inv_inner c.primary c.backup c.cg.gr); fold (cwb_inv_raw c);
     n
   };
@@ -116,32 +116,6 @@ fn get_backup (c:cwb_counter)
 (* increment — FAA-based increment with LA spec                     *)
 (* ================================================================ *)
 
-(** try_incr: inside invariant, FAA on primary, update ghost *)
-fn try_incr_cwb_impl (c:cwb_counter) (#n : erased U32.t)
-  requires cwb_inv_raw c ** GR.pts_to c.cg.gr #0.5R n
-  returns old : U32.t
-  ensures cwb_inv_raw c ** GR.pts_to c.cg.gr #0.5R (U32.add_mod old 1ul) ** pure (old == reveal n)
-{
-  unfold cwb_inv_raw; unfold cwb_inv_inner;
-  with pv0 bv0. assert (B.pts_to c.primary pv0 ** B.pts_to c.backup bv0 ** GR.pts_to c.cg.gr #0.5R pv0 ** GR.pts_to c.cg.gr #0.5R n);
-  GR.pts_to_injective_eq c.cg.gr;
-  rewrite each pv0 as (reveal n);
-  let old = P.faa_box c.primary 1ul;
-  // Update ghost state
-  GR.gather c.cg.gr;
-  GR.(c.cg.gr := U32.add_mod old 1ul);
-  GR.share c.cg.gr;
-  fold (cwb_inv_inner c.primary c.backup c.cg.gr);
-  fold (cwb_inv_raw c);
-  old
-}
-
-let try_incr_cwb_atomic (c:cwb_counter) (#n : erased U32.t)
-  : stt_atomic U32.t #Observable emp_inames
-    (cwb_inv_raw c ** GR.pts_to c.cg.gr #0.5R n)
-    (fun old -> cwb_inv_raw c ** GR.pts_to c.cg.gr #0.5R (U32.add_mod old 1ul) ** pure (old == reveal n))
-  = Pulse.Lib.Core.as_atomic _ _ (try_incr_cwb_impl c #n)
-
 fn increment_cwb (c:cwb_counter)
   requires is_cwb c ** cwb_content c.cg 'n
   ensures is_cwb c ** (exists* m. cwb_content c.cg m)
@@ -150,7 +124,23 @@ fn increment_cwb (c:cwb_counter)
   let old = with_invariants U32.t emp_inames c.ci (cwb_inv_raw c)
     (GR.pts_to c.cg.gr #0.5R 'n)
     (fun old -> GR.pts_to c.cg.gr #0.5R (U32.add_mod old 1ul) ** pure (old == reveal 'n))
-  fn _ { try_incr_cwb_atomic c #'n };
+  fn _ {
+    unfold cwb_inv_raw; unfold cwb_inv_inner;
+    with pv0 bv0. assert (
+      B.pts_to c.primary pv0 **
+      B.pts_to c.backup bv0 **
+      GR.pts_to c.cg.gr #0.5R pv0 **
+      GR.pts_to c.cg.gr #0.5R 'n);
+    GR.pts_to_injective_eq c.cg.gr;
+    rewrite each pv0 as (reveal 'n);
+    let old = atomic_faa c.primary 1ul;
+    GR.gather c.cg.gr;
+    GR.(c.cg.gr := U32.add_mod old 1ul);
+    GR.share c.cg.gr;
+    fold (cwb_inv_inner c.primary c.backup c.cg.gr);
+    fold (cwb_inv_raw c);
+    old
+  };
   fold (cwb_content c.cg (U32.add_mod old 1ul));
   fold (is_cwb c);
 }
@@ -169,7 +159,7 @@ fn sync_backup (c:cwb_counter)
     emp (fun _ -> emp)
   fn _ {
     unfold cwb_inv_raw; unfold cwb_inv_inner;
-    P.write_atomic_box c.backup pv;
+    atomic_write c.backup pv;
     fold (cwb_inv_inner c.primary c.backup c.cg.gr);
     fold (cwb_inv_raw c);
   };
