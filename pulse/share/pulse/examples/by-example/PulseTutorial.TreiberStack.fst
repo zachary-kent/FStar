@@ -1,5 +1,5 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Treiber Stack — concrete nodes, pointer CAS on llist, LA push. *)
+(** Treiber Stack — concrete nodes, pointer CAS on llist, LA push & pop. *)
 module PulseTutorial.TreiberStack
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -217,11 +217,187 @@ fn push (#t:Type0) (s:tstack t) (v:t)
   ensures is_ts s ** (exists* ys. scont s.nm ys)
 {
   mk_id_trade s v #'xs;
-  // Now have: forall* y. beta(xs,y) @==> phi(xs,y) where beta=phi
   let tok = au_intro #(list t) #unit
                      #(fun xs -> scont s.nm xs)
                      #(fun xs _ -> scont s.nm (Cons v xs))
                      #(fun xs _ -> scont s.nm (Cons v xs))
                      'xs;
   push_loop s v tok ()
+}
+
+(* ================================================================ *)
+(* Pop operation — logically atomic                                 *)
+(* ================================================================ *)
+
+let list_pop_val (#t:Type0) (xs: list t) : option t =
+  match xs with | [] -> None | v::_ -> Some v
+
+let list_pop_rest (#t:Type0) (xs: list t) : list t =
+  match xs with | [] -> [] | _::xs' -> xs'
+
+let pop_post (#t:Type0) (g:sn t) (xs: list t) (ov: option t) : slprop =
+  scont g (list_pop_rest xs) ** pure (ov == list_pop_val xs)
+
+(** try_pop_impl: inside sinv_raw, read head, handle empty/non-empty.
+    Uses a box for the result value (avoids pair projection issues in Pulse).
+    On success (true): ghost state updated, result box holds list_pop_val.
+    On failure (false): ghost state unchanged, result box still None. *)
+fn try_pop_impl (#t:Type0) (s:tstack t) (old_hd : llist t) (out : box (option t))
+    (#xs : erased (list t))
+  requires sinv_raw s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)
+  returns b : bool
+  ensures sinv_raw s.head s.nm.gr **
+    P.cond b
+      (GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+      (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
+{
+  unfold sinv_raw;
+  let cur_hd = !s.head;
+  if (llist_eq cur_hd old_hd) {
+    with hd0 xs0.
+      assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 ** GR.pts_to s.nm.gr #0.5R xs);
+    GR.pts_to_injective_eq s.nm.gr;
+    rewrite each xs0 as (reveal xs);
+    let b = is_empty cur_hd;
+    if b {
+      // Stack is empty: xs = [], pop_rest = [], pop_val = None
+      fold (sinv_raw s.head s.nm.gr);
+      fold (P.cond true
+        (GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+        (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)));
+      true
+    } else {
+      // Stack non-empty: pop the head node
+      let popped = Pulse.Lib.LinkedList.pop cur_hd;
+      // popped : (llist t & t), is_list (fst popped) (List.Tot.tl xs), snd popped == List.Tot.hd xs
+      s.head := fst popped;
+      out := Some (snd popped);
+      // Update ghost state
+      GR.gather s.nm.gr;
+      GR.(s.nm.gr := List.Tot.tl (reveal xs));
+      GR.share s.nm.gr;
+      fold (sinv_raw s.head s.nm.gr);
+      // Rewrite to match postcondition's list_pop_rest/list_pop_val
+      rewrite each (List.Tot.tl (reveal xs)) as (list_pop_rest (reveal xs));
+      rewrite each (Some (snd popped)) as (list_pop_val (reveal xs));
+      fold (P.cond true
+        (GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+        (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)));
+      true
+    }
+  } else {
+    fold (sinv_raw s.head s.nm.gr);
+    fold (P.cond false
+      (GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+      (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)));
+    false
+  }
+}
+
+let try_pop_atomic (#t:Type0) (s:tstack t) (old_hd : llist t) (out : box (option t))
+    (#xs : erased (list t))
+  : stt_atomic bool #Observable emp_inames
+    (sinv_raw s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
+    (fun b -> sinv_raw s.head s.nm.gr **
+      P.cond b
+        (GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+        (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)))
+  = Pulse.Lib.Core.as_atomic _ _ (try_pop_impl s old_hd out #xs)
+
+fn try_pop (#t:Type0) (s:tstack t) (old_hd : llist t) (out : box (option t))
+    (#xs : erased (list t))
+  requires is_ts s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)
+  returns b : bool
+  ensures P.cond b
+    (is_ts s ** GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+    (is_ts s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
+{
+  unfold is_ts;
+  let b = with_invariants bool emp_inames s.inm (sinv_raw s.head s.nm.gr)
+    (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t))
+    (fun b -> P.cond b
+      (GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+      (GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)))
+  fn _ { try_pop_atomic s old_hd out #xs };
+  if b {
+    elim_cond_true _ _ _;
+    fold (is_ts s);
+    intro_cond_true
+      (is_ts s ** GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+      (is_ts s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t));
+    true
+  } else {
+    elim_cond_false _ _ _;
+    fold (is_ts s);
+    intro_cond_false
+      (is_ts s ** GR.pts_to s.nm.gr #0.5R (list_pop_rest (reveal xs)) ** out |-> (list_pop_val (reveal xs)))
+      (is_ts s ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t));
+    false
+  }
+}
+
+fn rec pop_loop (#t:Type0) (s:tstack t)
+    (tok : au_token (list t) (option t)
+      (fun xs -> scont s.nm xs)
+      (fun xs ov -> pop_post s.nm xs ov)
+      (fun xs ov -> pop_post s.nm xs ov))
+    (out : box (option t))
+    (_u:unit)
+  requires is_ts s ** au_available tok ** out |-> (None #t)
+  ensures is_ts s ** (exists* (xs:list t) (ov:option t). pop_post s.nm xs ov ** out |-> ov)
+{
+  let old_hd = read_head s;
+  later_credit_buy 1;
+  let xs = au_open tok;
+  unfold scont;
+  let b = try_pop s old_hd out;
+  if b {
+    elim_cond_true _ _ _;
+    // Success: commit with list_pop_val xs
+    fold (scont s.nm (list_pop_rest (reveal xs)));
+    fold (pop_post s.nm (reveal xs) (list_pop_val (reveal xs)));
+    au_commit tok (reveal xs) (list_pop_val (reveal xs));
+  } else {
+    elim_cond_false _ _ _;
+    fold (scont s.nm xs);
+    later_credit_buy 1;
+    au_abort tok (reveal xs);
+    pop_loop s tok out ()
+  }
+}
+
+ghost
+fn mk_pop_trade (#t:Type0) (s : tstack t) (#xs : erased (list t))
+  requires emp
+  ensures (forall* (ov:option t). pop_post s.nm (reveal xs) ov @==> pop_post s.nm (reveal xs) ov)
+{
+  intro_forall #(option t) #(fun (ov:option t) -> pop_post s.nm (reveal xs) ov @==> pop_post s.nm (reveal xs) ov)
+    emp
+    fn (ov:option t) {
+      intro_trade (pop_post s.nm (reveal xs) ov) (pop_post s.nm (reveal xs) ov) emp
+        fn _ { () }
+    }
+}
+
+fn pop (#t:Type0) (s:tstack t)
+  requires is_ts s ** scont s.nm 'xs
+  returns ov : option t
+  ensures is_ts s ** (exists* (xs:list t). scont s.nm (list_pop_rest xs) ** pure (ov == list_pop_val xs))
+{
+  mk_pop_trade s #'xs;
+  let tok = au_intro #(list t) #(option t)
+                     #(fun xs -> scont s.nm xs)
+                     #(fun xs ov -> pop_post s.nm xs ov)
+                     #(fun xs ov -> pop_post s.nm xs ov)
+                     'xs;
+  let out = B.alloc (None #t);
+  pop_loop s tok out ();
+  // Unpack existentials — ov and out |-> ov are tied together
+  let xs2 = elim_exists #(list t) (fun (xs:list t) -> exists* (ov:option t). pop_post s.nm xs ov ** out |-> ov);
+  let ov2 = elim_exists #(option t) (fun (ov:option t) -> pop_post s.nm (reveal xs2) ov ** out |-> ov);
+  unfold (pop_post s.nm (reveal xs2) (reveal ov2));
+  // Read result from box (now we know out |-> ov2)
+  let ov = !out;
+  B.free out;
+  ov
 }
