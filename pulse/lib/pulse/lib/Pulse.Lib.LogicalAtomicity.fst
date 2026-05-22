@@ -14,11 +14,6 @@
    limitations under the License.
 *)
 
-(**
-  Implementation of Logical Atomicity for Pulse.
-  FlippableInv pattern — no admits.
-*)
-
 module Pulse.Lib.LogicalAtomicity
 #lang-pulse
 
@@ -26,19 +21,16 @@ open Pulse.Lib.Pervasives
 open Pulse.Lib.Inv
 module GR = Pulse.Lib.GhostReference
 
-(** Invariant content *)
 let au_inv_p (a:Type0) (alpha : a -> slprop) (gr : GR.ref bool) : slprop =
   exists* (b:bool). pts_to gr #0.5R b ** (if b then (exists* (x:a). alpha x) else emp)
 
-ghost
-fn fold_au_inv_p (a:Type0) (alpha : a -> slprop) (gr : GR.ref bool) (#b:bool)
+ghost fn fold_au_inv_p (a:Type0) (alpha : a -> slprop) (gr : GR.ref bool) (#b:bool)
   requires pts_to gr #0.5R b ** (if b then (exists* (x:a). alpha x) else emp)
   ensures au_inv_p a alpha gr
 { fold (au_inv_p a alpha gr) }
 
-(** Token *)
-noeq
-type au_token (a:Type0) (b:Type0) (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop) = {
+noeq type au_token (a:Type0) (b:Type0)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop) = {
   gr : GR.ref bool;
   i : iname;
 }
@@ -62,10 +54,6 @@ let au_opened (#a:Type0) (#b:Type0)
     (tok : au_token a b alpha beta phi) : slprop =
   pts_to tok.gr #0.5R false ** inv tok.i (au_inv_p a alpha tok.gr)
 
-(** ============================================================
-    au_intro
-    ============================================================ *)
-
 ghost fn au_intro (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
@@ -86,10 +74,6 @@ ghost fn au_intro (#a:Type0) (#b:Type0)
   tok
 }
 
-(** ============================================================
-    au_open (flip_off pattern)
-    ============================================================ *)
-
 ghost fn au_open (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi)
@@ -103,15 +87,12 @@ ghost fn au_open (#a:Type0) (#b:Type0)
   with_invariants_g unit emp_inames tok.i (au_inv_p a alpha tok.gr)
     (pts_to tok.gr #0.5R true)
     (fun _ -> (exists* (x:a). alpha x) ** pts_to tok.gr #0.5R false)
-  fn _
-  {
+  fn _ {
     unfold au_inv_p;
-    with bv.
-      assert (pts_to tok.gr #0.5R bv ** pts_to tok.gr #0.5R true);
+    with bv. assert (pts_to tok.gr #0.5R bv ** pts_to tok.gr #0.5R true);
     GR.gather tok.gr #true #_;
     rewrite each bv as true;
-    rewrite (if true then (exists* (x:a). alpha x) else emp)
-         as (exists* (x:a). alpha x);
+    rewrite (if true then (exists* (x:a). alpha x) else emp) as (exists* (x:a). alpha x);
     tok.gr := false;
     GR.share tok.gr;
     rewrite emp as (if false then (exists* (x:a). alpha x) else emp);
@@ -122,14 +103,9 @@ ghost fn au_open (#a:Type0) (#b:Type0)
   x
 }
 
-(** ============================================================
-    au_abort (flip_on pattern)
-    ============================================================ *)
-
 ghost fn au_abort (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi)
-    (x : erased a)
+    (tok : au_token a b alpha beta phi) (x : erased a)
   opens [au_iname tok]
   requires alpha (reveal x) ** au_opened tok ** later_credit 1
   ensures au_available tok
@@ -139,11 +115,9 @@ ghost fn au_abort (#a:Type0) (#b:Type0)
   with_invariants_g unit emp_inames tok.i (au_inv_p a alpha tok.gr)
     (alpha (reveal x) ** pts_to tok.gr #0.5R false)
     (fun _ -> pts_to tok.gr #0.5R true)
-  fn _
-  {
+  fn _ {
     unfold au_inv_p;
-    with bv.
-      assert (pts_to tok.gr #0.5R bv ** pts_to tok.gr #0.5R false);
+    with bv. assert (pts_to tok.gr #0.5R bv ** pts_to tok.gr #0.5R false);
     GR.gather tok.gr #false #_;
     rewrite each bv as false;
     rewrite (if false then (exists* (x:a). alpha x) else emp) as emp;
@@ -156,61 +130,12 @@ ghost fn au_abort (#a:Type0) (#b:Type0)
   };
   fold (au_available tok)
 }
-
-(** ============================================================
-    au_commit (restoring) — flip_on with updated alpha
-    ============================================================ *)
 
 ghost fn au_commit (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi)
     (x : erased a) (y : erased b)
-    (new_x : erased a)
-    (cfn : unit ->
-      stt_ghost unit emp_inames
-        (beta (reveal x) (reveal y))
-        (fun _ -> alpha (reveal new_x) ** phi (reveal x) (reveal y)))
-  opens [au_iname tok]
-  requires beta (reveal x) (reveal y) ** au_opened tok ** later_credit 1
-  ensures phi (reveal x) (reveal y) ** au_available tok
-{
-  // Step 1: run the committer to split beta into alpha(new_x) ** phi
-  cfn ();
-
-  // Step 2: deposit alpha(new_x) back into the FlippableInv (= au_abort with new_x)
-  open GR;
-  unfold au_opened;
-  with_invariants_g unit emp_inames tok.i (au_inv_p a alpha tok.gr)
-    (alpha (reveal new_x) ** pts_to tok.gr #0.5R false)
-    (fun _ -> pts_to tok.gr #0.5R true)
-  fn _
-  {
-    unfold au_inv_p;
-    with bv.
-      assert (pts_to tok.gr #0.5R bv ** pts_to tok.gr #0.5R false);
-    GR.gather tok.gr #false #_;
-    rewrite each bv as false;
-    rewrite (if false then (exists* (x:a). alpha x) else emp) as emp;
-    drop_ emp;
-    tok.gr := true;
-    GR.share tok.gr;
-    fold (exists* (xx:a). alpha xx);
-    rewrite (exists* (x:a). alpha x) as (if true then (exists* (x:a). alpha x) else emp);
-    fold_au_inv_p a alpha tok.gr;
-  };
-  fold (au_available tok)
-}
-
-(** ============================================================
-    au_commit_consume — permanently consume the AU
-    ============================================================ *)
-
-ghost fn au_commit_consume (#a:Type0) (#b:Type0)
-    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi)
-    (x : erased a) (y : erased b)
-    (cfn : unit ->
-      stt_ghost unit emp_inames
+    (cfn : unit -> stt_ghost unit emp_inames
         (beta (reveal x) (reveal y))
         (fun _ -> phi (reveal x) (reveal y)))
   requires beta (reveal x) (reveal y) ** au_opened tok
@@ -222,35 +147,14 @@ ghost fn au_commit_consume (#a:Type0) (#b:Type0)
   drop_ (inv tok.i (au_inv_p a alpha tok.gr))
 }
 
-(** ============================================================
-    LAT Elimination Rule
-    ============================================================ *)
-
 fn lat_elim (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
     (f : (tok : au_token a b alpha beta phi) ->
-      stt unit
-        (au_available tok)
-        (fun _ -> au_available tok ** (exists* (x:a) (y:b). phi x y)))
+      stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
   requires alpha (reveal x0)
-  ensures (exists* (x:a). alpha x) ** (exists* (x:a) (y:b). phi x y)
+  ensures (exists* (x:a) (y:b). phi x y)
 {
-  // 1. Create AU from alpha(x0) — deposits alpha into the FlippableInv
   let tok = au_intro #a #b #alpha #beta #phi x0;
-
-  // 2. Call the logically atomic function — it opens/commits the AU internally
-  f tok;
-  // Post: au_available tok ** (exists* x y. phi x y)
-
-  // 3. Extract the updated alpha from the AU
-  later_credit_buy 1;
-  let new_x = au_open tok;
-  // Post: alpha(new_x) ** au_opened tok ** (exists* x y. phi x y)
-
-  // 4. Package alpha into existential and clean up
-  fold (exists* (xx:a). alpha xx);
-  unfold au_opened;
-  drop_ (pts_to tok.gr #0.5R false);
-  drop_ (inv tok.i (au_inv_p a alpha tok.gr))
+  f tok
 }
