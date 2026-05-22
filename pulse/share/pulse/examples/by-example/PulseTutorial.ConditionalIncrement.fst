@@ -1,16 +1,14 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Conditional Increment — ported from Iris logatom/conditional_increment.
+(** Conditional Increment — inspired by Iris logatom/conditional_increment.
     
-    A counter that conditionally increments based on a boolean flag:
-    cinc(counter, flag):
-      if *flag then counter++ else skip
-      
-    The linearization point depends on the flag's value, which may change
-    concurrently. A prophecy variable predicts the flag's value at the
-    linearization point.
-    
-    Simplified from Iris (which uses a descriptor-based helping protocol).
-    Here we use a CAS-loop with prophecy to predict the flag value. *)
+    SIMPLIFIED VERSION: The flag is owned exclusively (not under a
+    concurrent invariant), so the flag read is non-atomic and there is
+    no concurrent race on the flag. The Iris version uses a descriptor-
+    based helping protocol with prophecy variables to handle the case
+    where the flag is shared under an invariant and may change between
+    the flag read and the CAS. That proof challenge is not represented
+    here — it requires a faithful prophecy resolve primitive coupled
+    to CAS (Iris's Resolve CmpXchg). *)
 module PulseTutorial.ConditionalIncrement
 #lang-pulse
 open Pulse.Lib.Pervasives

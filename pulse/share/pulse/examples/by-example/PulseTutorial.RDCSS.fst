@@ -1,13 +1,12 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** RDCSS — Restricted Double-Compare Single-Swap.
-    Ported from Iris logatom/rdcss.
+(** RDCSS — inspired by Iris logatom/rdcss.
     
-    rdcss(l_m, l_n, m1, n1, n2):
-      atomically: if *l_m == m1 && *l_n == n1 then *l_n := n2
-      returns the old value of *l_n
-    
-    Simplified from Iris (which uses descriptor-based helping).
-    Here we use a direct CAS-loop approach. *)
+    SIMPLIFIED VERSION: l_m's value is passed as a parameter (m_val)
+    rather than read from a concurrent location under an invariant.
+    The Iris version atomically reads *l_m and *l_n, requiring a
+    descriptor-based helping protocol with prophecy variables
+    (Resolve CmpXchg) to identify the linearization point. That
+    proof challenge is not represented here. *)
 module PulseTutorial.RDCSS
 #lang-pulse
 open Pulse.Lib.Pervasives

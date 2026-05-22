@@ -1,16 +1,12 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Elimination Stack — Treiber stack with elimination channel.
-    Ported from Iris: theories/logatom/elimination_stack/stack.v
+(** Elimination Stack — inspired by Iris logatom/elimination_stack.
     
-    When push/pop fail their CAS, instead of just retrying, they can
-    use a side channel: a pusher "offers" its value, and a concurrent
-    popper can "accept" the offer. This eliminates contention.
-    
-    Offer states: Pending(0) -> Accepted(1) | Revoked(2)
-    - Pusher creates offer in Pending state
-    - Popper CAS Pending -> Accepted
-    - Pusher checks: if Accepted, done; if still Pending, CAS Pending -> Revoked
-*)
+    SIMPLIFIED VERSION: Push-only. The elimination channel (offer/accept
+    protocol) is scaffolded but not used — push just retries CAS.
+    Pop is omitted because it requires persistent points-to (Iris l↦□)
+    to read node contents outside the invariant. The Iris version has
+    a full offer state machine (Pending→Accepted|Revoked) with ghost
+    tokens and later credits for the elimination protocol. *)
 module PulseTutorial.EliminationStack
 #lang-pulse
 open Pulse.Lib.Pervasives
