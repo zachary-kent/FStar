@@ -100,46 +100,41 @@ fn read_snap (s:snapshot)
 (* write — atomic write of snapshot value (with version bump)       *)
 (* ================================================================ *)
 
-fn write_snap_impl (s:snapshot) (new_v : U32.t)
-    (#cur_v : erased U32.t)
-  requires snap_inv_raw s ** GR.pts_to s.sg.gr #0.5R cur_v
-  ensures snap_inv_raw s ** GR.pts_to s.sg.gr #0.5R new_v
-{
-  unfold snap_inv_raw; unfold snap_inv_inner;
-  with v0 ver0.
-    assert (B.pts_to s.value v0 ** B.pts_to s.version ver0 ** GR.pts_to s.sg.gr #0.5R v0 ** GR.pts_to s.sg.gr #0.5R cur_v);
-  GR.pts_to_injective_eq s.sg.gr;
-  rewrite each v0 as (reveal cur_v);
-  // Write new value and bump version in one fn body
-  B.to_ref_pts_to s.value;
-  Pulse.Lib.Reference.write (B.box_to_ref s.value) new_v;
-  B.to_box_pts_to s.value;
-  B.to_ref_pts_to s.version;
-  let old_ver = Pulse.Lib.Reference.read (B.box_to_ref s.version);
-  Pulse.Lib.Reference.write (B.box_to_ref s.version) (U32.add_mod old_ver 1ul);
-  B.to_box_pts_to s.version;
-  // Update ghost
-  GR.gather s.sg.gr;
-  GR.(s.sg.gr := new_v);
-  GR.share s.sg.gr;
-  fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
-}
-
-let write_snap_atomic (s:snapshot) (new_v : U32.t) (#cur_v : erased U32.t)
-  : stt_atomic unit #Observable emp_inames
-    (snap_inv_raw s ** GR.pts_to s.sg.gr #0.5R cur_v)
-    (fun _ -> snap_inv_raw s ** GR.pts_to s.sg.gr #0.5R new_v)
-  = Pulse.Lib.Core.as_atomic _ _ (write_snap_impl s new_v #cur_v)
-
+(** write_snap: Two-phase protocol.
+    Phase 1: FAA version (single LOCK XADD)
+    Phase 2: Write value (single MOV)
+    Correctness: read_with checks version stability across reads.
+    If version bumps between reads, reader retries. *)
 fn write_snap (s:snapshot) (new_v : U32.t)
   requires is_snap s ** snap_content s.sg 'v
   ensures is_snap s ** snap_content s.sg new_v
 {
-  unfold is_snap; unfold snap_content;
+  unfold is_snap;
+  // Phase 1: bump version (single FAA — x86 LOCK XADD)
+  with_invariants unit emp_inames s.si (snap_inv_raw s)
+    emp (fun _ -> emp)
+  fn _ {
+    unfold snap_inv_raw; unfold snap_inv_inner;
+    let _ = P.faa_box s.version 1ul;
+    fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
+  };
+  // Phase 2: write new value + update ghost (single write — x86 MOV)
+  unfold snap_content;
   with_invariants unit emp_inames s.si (snap_inv_raw s)
     (GR.pts_to s.sg.gr #0.5R 'v)
     (fun _ -> GR.pts_to s.sg.gr #0.5R new_v)
-  fn _ { write_snap_atomic s new_v #'v };
+  fn _ {
+    unfold snap_inv_raw; unfold snap_inv_inner;
+    P.write_atomic_box s.value new_v;
+    with v0 ver0. assert (B.pts_to s.value new_v ** B.pts_to s.version ver0 **
+      GR.pts_to s.sg.gr #0.5R v0 ** GR.pts_to s.sg.gr #0.5R 'v);
+    GR.pts_to_injective_eq s.sg.gr;
+    rewrite each v0 as (reveal 'v);
+    GR.gather s.sg.gr;
+    GR.(s.sg.gr := new_v);
+    GR.share s.sg.gr;
+    fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
+  };
   fold (snap_content s.sg new_v);
   fold (is_snap s)
 }
