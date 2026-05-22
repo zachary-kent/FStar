@@ -51,7 +51,7 @@ let au_available (#a:Type0) (#b:Type0)
 
 let au_opened (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
-    (tok : au_token a b alpha beta phi) : slprop =
+    (tok : au_token a b alpha beta phi) (x : a) : slprop =
   pts_to tok.gr #0.5R false ** inv tok.i (au_inv_p a alpha tok.gr)
 
 ghost fn au_intro (#a:Type0) (#b:Type0)
@@ -80,7 +80,7 @@ ghost fn au_open (#a:Type0) (#b:Type0)
   opens [au_iname tok]
   requires au_available tok ** later_credit 1
   returns x : erased a
-  ensures alpha (reveal x) ** au_opened tok
+  ensures alpha (reveal x) ** au_opened tok (reveal x)
 {
   open GR;
   unfold au_available;
@@ -99,7 +99,7 @@ ghost fn au_open (#a:Type0) (#b:Type0)
     fold_au_inv_p a alpha tok.gr;
   };
   let x = elim_exists #a (fun (x:a) -> alpha x);
-  fold (au_opened tok);
+  fold (au_opened tok (reveal x));
   x
 }
 
@@ -107,11 +107,11 @@ ghost fn au_abort (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (tok : au_token a b alpha beta phi) (x : erased a)
   opens [au_iname tok]
-  requires alpha (reveal x) ** au_opened tok ** later_credit 1
+  requires alpha (reveal x) ** au_opened tok (reveal x) ** later_credit 1
   ensures au_available tok
 {
   open GR;
-  unfold au_opened;
+  unfold (au_opened tok (reveal x));
   with_invariants_g unit emp_inames tok.i (au_inv_p a alpha tok.gr)
     (alpha (reveal x) ** pts_to tok.gr #0.5R false)
     (fun _ -> pts_to tok.gr #0.5R true)
@@ -138,11 +138,11 @@ ghost fn au_commit (#a:Type0) (#b:Type0)
     (cfn : unit -> stt_ghost unit emp_inames
         (beta (reveal x) (reveal y))
         (fun _ -> phi (reveal x) (reveal y)))
-  requires beta (reveal x) (reveal y) ** au_opened tok
+  requires beta (reveal x) (reveal y) ** au_opened tok (reveal x)
   ensures phi (reveal x) (reveal y)
 {
   cfn ();
-  unfold au_opened;
+  unfold (au_opened tok (reveal x));
   drop_ (pts_to tok.gr #0.5R false);
   drop_ (inv tok.i (au_inv_p a alpha tok.gr))
 }
