@@ -124,3 +124,35 @@ fn lat_open (#a:Type0) (#b:Type0)
         (fun _ -> (exists* (x':a). alpha x') ** result (reveal x) (reveal y)))
   requires alpha (reveal x0)
   ensures (exists* (x:a). alpha x) ** (exists* (x:a) (y:b). result x y)
+
+(** General abort-or-commit composition.
+    Iris aacc_aupd (atomic.v line 373-385).
+
+    f may either commit (return phi, AU consumed) or abort
+    (return alpha + AU available). The on_commit/on_abort callbacks
+    handle each case.
+
+    Iris line 379 inner commit disjunction:
+      (α(x) ∗ (AU ={E1}=∗ Φ')) ∨ (∃y. β(x,y) ∗ (Φ(x,y) ={E1}=∗ Φ'))
+    Left = abort (on_abort), Right = commit (on_commit). *)
+fn lat_open_gen (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (#result : slprop)
+    (x0 : erased a)
+    (f : (tok : au_token a b alpha beta phi) ->
+      stt bool (au_available tok)
+        (fun committed ->
+          if committed
+          then (exists* (x:a) (y:b). phi x y)
+          else (exists* (x:a). alpha x) ** au_available tok))
+    (on_commit : (x:erased a) -> (y:erased b) ->
+      stt_ghost unit emp_inames
+        (phi (reveal x) (reveal y))
+        (fun _ -> (exists* (x':a). alpha x') ** result))
+    (on_abort :
+      (tok : au_token a b alpha beta phi) ->
+      stt unit
+        ((exists* (x:a). alpha x) ** au_available tok)
+        (fun _ -> (exists* (x:a). alpha x) ** result))
+  requires alpha (reveal x0)
+  ensures (exists* (x:a). alpha x) ** result

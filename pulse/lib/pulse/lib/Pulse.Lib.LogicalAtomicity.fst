@@ -184,3 +184,41 @@ fn lat_open (#a:Type0) (#b:Type0)
   let y = elim_exists #b (fun (y:b) -> phi (reveal x) y);
   split_phi x y;
 }
+
+(** Iris aacc_aupd (atomic.v line 373-385) *)
+fn lat_open_gen (#a:Type0) (#b:Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (#result : slprop)
+    (x0 : erased a)
+    (f : (tok : au_token a b alpha beta phi) ->
+      stt bool (au_available tok)
+        (fun committed ->
+          if committed
+          then (exists* (x:a) (y:b). phi x y)
+          else (exists* (x:a). alpha x) ** au_available tok))
+    (on_commit : (x:erased a) -> (y:erased b) ->
+      stt_ghost unit emp_inames
+        (phi (reveal x) (reveal y))
+        (fun _ -> (exists* (x':a). alpha x') ** result))
+    (on_abort :
+      (tok : au_token a b alpha beta phi) ->
+      stt unit
+        ((exists* (x:a). alpha x) ** au_available tok)
+        (fun _ -> (exists* (x:a). alpha x) ** result))
+  requires alpha (reveal x0)
+  ensures (exists* (x:a). alpha x) ** result
+{
+  // Iris aupd_intro (line 276)
+  let tok = au_intro #a #b #alpha #beta #phi x0;
+  // Iris: inner aacc, may abort or commit (line 378-380)
+  let committed = f tok;
+  if committed {
+    // Iris: commit path (line 393, right disjunct)
+    let x = elim_exists #a (fun (x:a) -> exists* (y:b). phi x y);
+    let y = elim_exists #b (fun (y:b) -> phi (reveal x) y);
+    on_commit x y;
+  } else {
+    // Iris: abort path (line 379, left disjunct)
+    on_abort tok;
+  }
+}
