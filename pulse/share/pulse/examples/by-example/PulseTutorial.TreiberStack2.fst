@@ -79,7 +79,7 @@ ghost fn dup_persistent (#a:Type0) (r : B.box a) (#v : a)
   fold (persistent_pts_to r v)
 }
 
-fn read_persistent (#a:Type0) (r : B.box a) (#v : a)
+atomic fn read_persistent (#a:Type0) (r : B.box a) (#v : a)
   preserves persistent_pts_to r v
   returns x : a
   ensures pure (x == v)
@@ -87,7 +87,7 @@ fn read_persistent (#a:Type0) (r : B.box a) (#v : a)
   dup_persistent r;
   unfold persistent_pts_to;
   with p. assert (B.pts_to r #p v);
-  let x = B.op_Bang r;
+  let x = atomic_read r;
   drop_ (B.pts_to r #p v);
   x
 }
@@ -333,4 +333,106 @@ fn push2 (#t:Type0) (s:tstack2 t) (v:t)
     #(fun xs _ -> scont2 s.nm (v :: xs))
     'xs;
   push_loop2 s v tok ()
+}
+
+(* ================================================================ *)
+(* pop — read node outside invariant using persistent is_list       *)
+(* ================================================================ *)
+
+let list_hd_opt (#t:Type0) (xs:list t) : option t = match xs with | [] -> None | v::_ -> Some v
+let list_tl (#t:Type0) (xs:list t) : list t = match xs with | [] -> [] | _::rest -> rest
+let list_hd_val (#t:Type0) (xs:list t{Cons? xs}) : t = match xs with | v::_ -> v
+
+let pop_post2 (#t:Type0) (g:ts_ghost t) (xs:list t) (ov:option t) : slprop =
+  scont2 g (list_tl xs) ** pure (ov == list_hd_opt xs)
+
+ghost fn is_list_unfold_non_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
+  requires is_list hd xs ** pure (not (B.is_null hd))
+  ensures exists* (nd : node t).
+    persistent_pts_to hd nd ** pure (Cons? xs /\ nd.value == List.Tot.hd xs) **
+    is_list nd.nd_next (list_tl xs)
+{
+  match xs {
+    Nil -> {
+      unfold is_list;
+      unreachable ()
+    }
+    Cons x rest -> {
+      unfold is_list;
+      with nd. assert (persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
+      rewrite (is_list nd.nd_next rest) as (is_list nd.nd_next (list_tl xs))
+    }
+  }
+}
+
+
+(** read_head_snap: returns head pointer. is_list snapshot in implicit 'xs *)
+
+(** read_head_snap: read head AND get a persistent is_list snapshot. *)
+fn read_head_snap (#t:Type0) (s:tstack2 t)
+  requires is_ts2 s
+  returns hd : B.box (node t)
+  ensures is_ts2 s ** (exists* xs. is_list hd xs)
+{
+  unfold is_ts2;
+  let hd = with_invariants (B.box (node t)) emp_inames s.inm (sinv s)
+    emp (fun hd -> exists* xs. is_list hd xs)
+  fn _ {
+    unfold sinv; unfold sinv_inner;
+    with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0);
+    dup_is_list hd0 xs0;
+    let c = atomic_read s.head;
+    rewrite (is_list hd0 xs0) as (is_list c xs0);
+    fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+    c
+  };
+  fold (is_ts2 s);
+  hd
+}
+
+fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
+    (tok : au_token (list t) (option t)
+      (fun xs -> scont2 s.nm xs)
+      (fun xs ov -> pop_post2 s.nm xs ov)
+      (fun xs ov -> pop_post2 s.nm xs ov))
+    (_u:unit)
+  requires is_ts2 s ** au_available tok
+  ensures is_ts2 s ** (exists* xs ov. pop_post2 s.nm xs ov)
+{
+  let old_hd = read_head_snap s;
+  if (B.is_null old_hd) {
+    drop_ (exists* xs. is_list old_hd xs);
+    later_credit_buy 1;
+    let xs = au_open tok;
+    unfold scont2;
+    fold (scont2 s.nm (list_tl (reveal xs)));
+    fold (pop_post2 s.nm (reveal xs) (None #t));
+    au_commit tok (reveal xs) (None #t);
+  } else {
+    with snap_xs. assert (is_list old_hd snap_xs);
+    is_list_unfold_non_null old_hd snap_xs;
+    with nd. assert (persistent_pts_to old_hd nd ** pure (Cons? snap_xs /\ nd.value == List.Tot.hd snap_xs) ** is_list nd.nd_next (list_tl snap_xs));
+    dup_persistent old_hd #nd;
+    let node_val = atomic_read_persistent old_hd #nd;
+    let v = node_val.value;
+    let next_hd = node_val.nd_next;
+    drop_ (is_list nd.nd_next (list_tl snap_xs));
+    rewrite (persistent_pts_to old_hd nd) as
+            (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+    later_credit_buy 1;
+    let xs = au_open tok;
+    unfold scont2;
+    let b = try_pop2 s old_hd next_hd v;
+    if b {
+      elim_cond_true _ _;
+      fold (scont2 s.nm (list_tl (reveal xs)));
+      fold (pop_post2 s.nm (reveal xs) (Some v));
+      au_commit tok (reveal xs) (Some v);
+    } else {
+      elim_cond_false _ _;
+      fold (scont2 s.nm xs);
+      au_abort tok (reveal xs);
+      pop_loop2 s tok ()
+    }
+  }
 }
