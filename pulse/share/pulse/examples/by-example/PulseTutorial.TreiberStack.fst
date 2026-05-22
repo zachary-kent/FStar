@@ -10,6 +10,8 @@ module U32 = FStar.UInt32
 module P = Pulse.Lib.Primitives
 open Pulse.Lib.Inv
 open Pulse.Lib.LinkedList
+open Pulse.Lib.Trade
+open Pulse.Lib.Forall
 open Pulse.Lib.Box { box, (:=), (!) }
 
 (** CAS on llist pointer: read + llist_eq + write, lifted to atomic *)
@@ -181,7 +183,7 @@ fn rec push_loop (#t:Type0) (s:tstack t) (v:t)
   if b {
     elim_cond_true _ _ _;
     fold (scont s.nm (Cons v xs));
-    au_commit tok (reveal xs) (hide ()) fn _ { () };
+    au_commit tok (reveal xs) ();
   } else {
     elim_cond_false _ _ _;
     fold (scont s.nm xs);
@@ -191,10 +193,31 @@ fn rec push_loop (#t:Type0) (s:tstack t) (v:t)
   }
 }
 
+ghost
+fn id_trade_body (#t:Type0) (s : tstack t) (v : t) (#xs : erased (list t)) (y : unit)
+  requires scont s.nm (Cons v xs)
+  ensures scont s.nm (Cons v xs)
+{ () }
+
+ghost
+fn mk_id_trade (#t:Type0) (s : tstack t) (v : t) (#xs : erased (list t))
+  requires emp
+  ensures (forall* (y:unit). scont s.nm (Cons v xs) @==> scont s.nm (Cons v xs))
+{
+  intro_forall #unit #(fun (y:unit) -> scont s.nm (Cons v xs) @==> scont s.nm (Cons v xs))
+    emp
+    fn (y:unit) {
+      intro_trade (scont s.nm (Cons v xs)) (scont s.nm (Cons v xs)) emp
+        fn _ { () }
+    }
+}
+
 fn push (#t:Type0) (s:tstack t) (v:t)
   requires is_ts s ** scont s.nm 'xs
   ensures is_ts s ** (exists* ys. scont s.nm ys)
 {
+  mk_id_trade s v #'xs;
+  // Now have: forall* y. beta(xs,y) @==> phi(xs,y) where beta=phi
   let tok = au_intro #(list t) #unit
                      #(fun xs -> scont s.nm xs)
                      #(fun xs _ -> scont s.nm (Cons v xs))
