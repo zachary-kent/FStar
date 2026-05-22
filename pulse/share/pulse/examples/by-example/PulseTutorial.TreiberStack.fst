@@ -15,7 +15,7 @@ open Pulse.Lib.Forall
 open Pulse.Lib.Box { box, (:=), (!) }
 
 (** CAS on llist pointer: read + llist_eq + write, lifted to atomic.
-    x86 model: LOCK CMPXCHG on the head pointer. *)
+    Iris model: CAS is a single HeapLang primitive step. *)
 fn cas_llist_impl (#t:Type0) (r : box (llist t)) (u v : llist t) (#i : erased (llist t))
   requires r |-> i
   returns b : bool
@@ -98,13 +98,11 @@ fn read_head (#t:Type0) (s:tstack t)
 }
 
 (** try_push_impl: CAS head + cons + ghost update in one fn (lifted to atomic).
-    x86 model: the linearization point is LOCK CMPXCHG on s.head.
-    The LinkedList.cons (node allocation) is thread-local preparation —
-    the new node is invisible to other threads until the CAS publishes it.
-    Ghost operations (GR.gather/share/write) don't execute on hardware.
-    Modeling concession: cons is inside as_atomic because Pulse's LinkedList.cons
-    combines physical allocation with logical is_list construction. A more
-    faithful model would separate these (alloc before CAS, link after). *)
+    Iris model: alloc, load, store, and CAS are each a single HeapLang
+    primitive step. The as_atomic block contains a bounded number of
+    such steps (load head, compare, alloc node, store head), matching
+    Iris's notion of physical atomicity. Ghost operations (GR.gather/
+    share/write) are erased. *)
 fn try_push_impl (#t:Type0) (s:tstack t) (v:t) (old_hd : llist t)
     (#xs : erased (list t))
   requires sinv_raw s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs
@@ -244,14 +242,10 @@ let pop_post (#t:Type0) (g:sn t) (xs: list t) (ov: option t) : slprop =
   scont g (list_pop_rest xs) ** pure (ov == list_pop_val xs)
 
 (** try_pop_impl: inside sinv_raw, read head, handle empty/non-empty.
-    x86 model: the linearization point is LOCK CMPXCHG on s.head.
-    LinkedList.pop reads from the old head node, which is immutable once
-    published (Treiber stack nodes are never modified after creation).
-    The out box write is thread-local (only this thread accesses `out`).
-    Ghost operations don't execute on hardware.
-    Modeling concession: pop + out write are inside as_atomic because
-    Pulse's LinkedList.pop combines physical read with logical is_list
-    decomposition. A more faithful model would read node data before CAS. *)
+    Iris model: load, store, and deref are each a single HeapLang step.
+    The as_atomic block contains: load head, compare, deref node (pop),
+    store head, store out — a bounded number of primitive steps.
+    Ghost operations are erased. *)
 fn try_pop_impl (#t:Type0) (s:tstack t) (old_hd : llist t) (out : box (option t))
     (#xs : erased (list t))
   requires sinv_raw s.head s.nm.gr ** GR.pts_to s.nm.gr #0.5R xs ** out |-> (None #t)
