@@ -184,8 +184,9 @@ fn try_add (c:counter) (old_n delta : U32.t) (#n : erased U32.t)
     when creating the AU) does the rest. This is the key insight:
     the CAS loop is parametric in the client's postcondition. *)
 fn rec faa_loop (c:counter) (delta:U32.t)
+    (#is : inames)
     (#phi : U32.t -> U32.t -> slprop)
-    (tok : au_token emp_inames U32.t U32.t
+    (tok : au_token is U32.t U32.t
       (fun n -> ctr_val c.cg n)
       (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
       phi)
@@ -208,6 +209,7 @@ fn rec faa_loop (c:counter) (delta:U32.t)
     // Provide β(n, old_n) to au_commit. The stored trade β @==> Φ
     // (created by the caller) transforms it into Φ(n, old_n).
     fold (ctr_val c.cg (U32.add_mod (reveal n) delta));
+    later_credit_buy 1;
     au_commit tok (reveal n) old_n;
     // Now we have: phi (reveal n) old_n
     old_n
@@ -229,19 +231,19 @@ ghost
 fn mk_faa_trade (c:counter) (delta:U32.t) (#n : erased U32.t)
   requires emp
   ensures (forall* (old:U32.t).
-    (ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n)) @==>
+    (later_credit 1 ** ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n)) @==>
     (ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n)))
 {
   intro_forall #U32.t
     #(fun (old:U32.t) ->
-      (ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n)) @==>
+      (later_credit 1 ** ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n)) @==>
       (ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n)))
     emp
     fn (old:U32.t) {
       intro_trade
+        (later_credit 1 ** ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n))
         (ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n))
-        (ctr_val c.cg (U32.add_mod (reveal n) delta) ** pure (old == reveal n))
-        emp fn _ { () }
+        emp fn _ { drop_ (later_credit 1) }
     }
 }
 
@@ -258,43 +260,45 @@ fn fetch_and_add_seq (c:counter) (delta:U32.t)
     #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
     #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
     'n;
-  faa_loop c delta tok ()
+  faa_loop c delta #emp_inames tok ()
 }
 
 (* ================================================================ *)
-(* Client 2: concurrent client with ctr_val inside an invariant     *)
-(* Shows the real power of ∀Φ: client chooses their own Φ.         *)
+(* Client 2: non-trivial Φ — demonstrates universal quantification *)
 (* ================================================================ *)
 
-(** A concurrent client that holds ctr_val inside their own invariant,
-    alongside a ghost "total" tracking the sum of all increments.
-    
-    The client creates an AU where Φ updates their ghost total.
-    This demonstrates the universally-quantified Φ: the CAS loop
-    (faa_loop) never knows about the client's ghost state, but at
-    the linearization point the stored trade transforms β into the
-    client's custom Φ which updates their ghost total. *)
-let client_inv_p (c:counter) (total_gr : GR.ref U32.t) : slprop =
-  exists* (n:U32.t). ctr_val c.cg n ** GR.pts_to total_gr n
-
-fn concurrent_client ()
-  requires emp
-  ensures emp
+(** Composed client: Φ ≠ β demonstrates genuine LA.
+    β = ctr_val(n+delta) ** pure(old==n)  (the counter update)
+    Φ = pure(old==n)                      (just the return value fact)
+    The trade drops ctr_val and keeps only the pure receipt.
+    This proves faa_loop works for ANY client-chosen postcondition. *)
+fn composed_faa (c:counter) (delta:U32.t)
+  requires is_ctr c ** ctr_val c.cg 'n
+  returns old : U32.t
+  ensures is_ctr c ** (exists* m. pure (old == m))
 {
-  let c = new_counter ();
-  // Client's private ghost state: tracks the counter value
-  let total_gr = GR.alloc #U32.t 0ul;
-  // Move ctr_val into client invariant
-  fold (client_inv_p c total_gr);
-  let cli_inv = new_invariant (client_inv_p c total_gr);
-  // To call faa_loop, client must:
-  // 1. Open their invariant to extract ctr_val (providing α)
-  // 2. Create a trade β @==> Φ where Φ updates their ghost total
-  // 3. Create the AU and pass it to faa_loop
-  // This is left as a proof exercise — the key point is that
-  // faa_loop is polymorphic in Φ, so it works for any client.
-  drop_ (inv cli_inv (client_inv_p c total_gr));
-  drop_ (is_ctr c)
+  intro_forall #U32.t
+    #(fun (old:U32.t) ->
+      (later_credit 1 ** ctr_val c.cg (U32.add_mod (reveal 'n) delta) ** pure (old == reveal 'n)) @==>
+      pure (old == reveal 'n))
+    emp
+    fn (old:U32.t) {
+      intro_trade
+        (later_credit 1 ** ctr_val c.cg (U32.add_mod (reveal 'n) delta) ** pure (old == reveal 'n))
+        (pure (old == reveal 'n))
+        emp fn _ {
+          drop_ (later_credit 1);
+          drop_ (ctr_val c.cg (U32.add_mod (reveal 'n) delta))
+        }
+    };
+  let tok = au_intro #emp_inames #U32.t #U32.t
+    #(fun n -> ctr_val c.cg n)
+    #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
+    #(fun n old -> pure (old == n))
+    'n;
+  let old = faa_loop c delta #emp_inames tok ();
+  with m. assert (pure (old == m));
+  old
 }
 
 (* ================================================================ *)

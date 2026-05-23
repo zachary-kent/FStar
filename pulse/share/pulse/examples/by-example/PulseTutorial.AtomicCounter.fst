@@ -165,7 +165,7 @@ fn try_incr (c:counter) (old_n : U32.t) (#n : erased U32.t)
 
 (** incr_loop: AU open/commit/abort CAS retry loop *)
 fn rec incr_loop (c:counter)
-    (tok : au_token U32.t unit
+    (tok : au_token emp_inames U32.t unit
       (fun n -> ctr_content c.cg n)
       (fun n _ -> ctr_content c.cg (U32.add_mod n 1ul))
       (fun n _ -> ctr_content c.cg (U32.add_mod n 1ul)))
@@ -181,6 +181,7 @@ fn rec incr_loop (c:counter)
   if b {
     elim_cond_true _ _;
     fold (ctr_content c.cg (U32.add_mod (reveal n) 1ul));
+    later_credit_buy 1;
     au_commit tok (reveal n) ();
   } else {
     elim_cond_false _ _;
@@ -194,14 +195,14 @@ fn rec incr_loop (c:counter)
 ghost
 fn mk_incr_trade (c:counter) (#n : erased U32.t)
   requires emp
-  ensures (forall* (y:unit). ctr_content c.cg (U32.add_mod (reveal n) 1ul) @==> ctr_content c.cg (U32.add_mod (reveal n) 1ul))
+  ensures (forall* (y:unit). (later_credit 1 ** ctr_content c.cg (U32.add_mod (reveal n) 1ul)) @==> ctr_content c.cg (U32.add_mod (reveal n) 1ul))
 {
-  intro_forall #unit #(fun (y:unit) -> ctr_content c.cg (U32.add_mod (reveal n) 1ul) @==> ctr_content c.cg (U32.add_mod (reveal n) 1ul))
+  intro_forall #unit #(fun (y:unit) -> (later_credit 1 ** ctr_content c.cg (U32.add_mod (reveal n) 1ul)) @==> ctr_content c.cg (U32.add_mod (reveal n) 1ul))
     emp
     fn (y:unit) {
-      intro_trade (ctr_content c.cg (U32.add_mod (reveal n) 1ul))
+      intro_trade (later_credit 1 ** ctr_content c.cg (U32.add_mod (reveal n) 1ul))
                   (ctr_content c.cg (U32.add_mod (reveal n) 1ul)) emp
-        fn _ { () }
+        fn _ { drop_ (later_credit 1) }
     }
 }
 
@@ -212,7 +213,7 @@ fn increment (c:counter)
   ensures is_ctr c ** (exists* m. ctr_content c.cg m)
 {
   mk_incr_trade c #'n;
-  let tok = au_intro #U32.t #unit
+  let tok = au_intro #emp_inames #U32.t #unit
     #(fun n -> ctr_content c.cg n)
     #(fun n _ -> ctr_content c.cg (U32.add_mod n 1ul))
     #(fun n _ -> ctr_content c.cg (U32.add_mod n 1ul))

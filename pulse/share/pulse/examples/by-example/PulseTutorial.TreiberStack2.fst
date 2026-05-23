@@ -77,16 +77,16 @@ ghost fn dup_persistent (#a:Type0) (r : B.box a) (#v : a)
   fold (AP.persistent_pts_to r v)
 }
 
-atomic fn read_persistent (#a:Type0) (r : B.box a) (#v : a)
-  preserves AP.persistent_pts_to r v
+atomic fn read_persistent (#a:Type0) (r : B.box a) (#v : erased a)
+  preserves AP.persistent_pts_to r (reveal v)
   returns x : a
-  ensures pure (x == v)
+  ensures pure (x == reveal v)
 {
   dup_persistent r;
   unfold AP.persistent_pts_to;
-  with p. assert (B.pts_to r #p v);
+  with p. assert (B.pts_to r #p (reveal v));
   let x = atomic_read r;
-  drop_ (B.pts_to r #p v);
+  drop_ (B.pts_to r #p (reveal v));
   x
 }
 
@@ -274,7 +274,7 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
 (** push_loop: CAS retry loop.
     Alloc happens HERE (outside invariant). On failure, node is dropped. *)
 fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
-    (tok : au_token (list t) unit
+    (tok : au_token emp_inames (list t) unit
       (fun xs -> scont2 s.nm xs)
       (fun xs _ -> scont2 s.nm (v :: xs))
       (fun xs _ -> scont2 s.nm (v :: xs)))
@@ -297,6 +297,7 @@ fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
   if b {
     elim_cond_true _ _;
     fold (scont2 s.nm (v :: xs));
+    later_credit_buy 1;
     au_commit tok (reveal xs) ();
   } else {
     elim_cond_false _ _;
@@ -310,13 +311,13 @@ fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
 ghost
 fn mk_id_trade2 (#t:Type0) (s : tstack2 t) (v : t) (#xs : erased (list t))
   requires emp
-  ensures (forall* (y:unit). scont2 s.nm (v :: xs) @==> scont2 s.nm (v :: xs))
+  ensures (forall* (y:unit). (later_credit 1 ** scont2 s.nm (v :: xs)) @==> scont2 s.nm (v :: xs))
 {
-  intro_forall #unit #(fun (y:unit) -> scont2 s.nm (v :: xs) @==> scont2 s.nm (v :: xs))
+  intro_forall #unit #(fun (y:unit) -> (later_credit 1 ** scont2 s.nm (v :: xs)) @==> scont2 s.nm (v :: xs))
     emp
     fn (y:unit) {
-      intro_trade (scont2 s.nm (v :: xs)) (scont2 s.nm (v :: xs)) emp
-        fn _ { () }
+      intro_trade (later_credit 1 ** scont2 s.nm (v :: xs)) (scont2 s.nm (v :: xs)) emp
+        fn _ { drop_ (later_credit 1) }
     }
 }
 
@@ -325,7 +326,7 @@ fn push2 (#t:Type0) (s:tstack2 t) (v:t)
   ensures is_ts2 s ** (exists* ys. scont2 s.nm ys)
 {
   mk_id_trade2 s v #'xs;
-  let tok = au_intro #(list t) #unit
+  let tok = au_intro #emp_inames #(list t) #unit
     #(fun xs -> scont2 s.nm xs)
     #(fun xs _ -> scont2 s.nm (v :: xs))
     #(fun xs _ -> scont2 s.nm (v :: xs))
@@ -363,6 +364,25 @@ ghost fn is_list_unfold_non_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
   }
 }
 
+ghost fn is_list_unfold_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
+  requires is_list hd xs ** pure (B.is_null hd)
+  ensures pure (xs == [])
+{
+  match xs {
+    Nil -> {
+      unfold is_list
+    }
+    Cons x rest -> {
+      unfold is_list;
+      with nd. assert (AP.persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
+      unfold (AP.persistent_pts_to hd nd);
+      with p. assert (B.pts_to hd #p nd);
+      B.pts_to_not_null hd;
+      unreachable ()
+    }
+  }
+}
+
 
 (** read_head_snap: returns head pointer. is_list snapshot in implicit 'xs *)
 
@@ -381,6 +401,30 @@ fn read_head_snap (#t:Type0) (s:tstack2 t)
     dup_is_list hd0 xs0;
     let c = atomic_read s.head;
     rewrite (is_list hd0 xs0) as (is_list c xs0);
+    fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+    c
+  };
+  fold (is_ts2 s);
+  hd
+}
+
+fn read_head_for_xs (#t:Type0) (s:tstack2 t) (#xs : erased (list t))
+  requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs
+  returns hd : B.box (node t)
+  ensures is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs ** is_list hd (reveal xs)
+{
+  unfold is_ts2;
+  let hd = with_invariants (B.box (node t)) emp_inames s.inm (sinv s)
+    (GR.pts_to s.nm.gr #0.5R xs)
+    (fun hd -> GR.pts_to s.nm.gr #0.5R xs ** is_list hd (reveal xs))
+  fn _ {
+    unfold sinv; unfold sinv_inner;
+    with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 ** GR.pts_to s.nm.gr #0.5R xs);
+    GR.pts_to_injective_eq s.nm.gr;
+    rewrite each xs0 as (reveal xs);
+    dup_is_list hd0 (reveal xs);
+    let c = atomic_read s.head;
+    rewrite (is_list hd0 (reveal xs)) as (is_list c (reveal xs));
     fold (sinv_inner s.head s.nm.gr); fold (sinv s);
     c
   };
@@ -475,7 +519,7 @@ fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
 }
 
 fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
-    (tok : au_token (list t) (option t)
+    (tok : au_token emp_inames (list t) (option t)
       (fun xs -> scont2 s.nm xs)
       (fun xs ov -> pop_post2 s.nm xs ov)
       (fun xs ov -> pop_post2 s.nm xs ov))
@@ -483,38 +527,36 @@ fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
   requires is_ts2 s ** au_available tok
   ensures is_ts2 s ** (exists* xs ov. pop_post2 s.nm xs ov)
 {
-  let old_hd = read_head_snap s;
+  later_credit_buy 1;
+  let xs = au_open tok;
+  unfold scont2;
+  let old_hd = read_head_for_xs s;
   if (B.is_null old_hd) {
-    drop_ (exists* xs. is_list old_hd xs);
-    later_credit_buy 1;
-    let xs = au_open tok;
-    unfold scont2;
+    is_list_unfold_null old_hd (reveal xs);
     fold (scont2 s.nm (list_tl (reveal xs)));
     fold (pop_post2 s.nm (reveal xs) (None #t));
+    later_credit_buy 1;
     au_commit tok (reveal xs) (None #t);
   } else {
-    with snap_xs. assert (is_list old_hd snap_xs);
-    is_list_unfold_non_null old_hd snap_xs;
-    with nd. assert (AP.persistent_pts_to old_hd nd ** pure (Cons? snap_xs /\ nd.value == List.Tot.hd snap_xs) ** is_list nd.nd_next (list_tl snap_xs));
-    dup_persistent old_hd #nd;
-    let node_val = atomic_read_persistent old_hd #nd;
+    is_list_unfold_non_null old_hd (reveal xs);
+    let node_val = read_persistent old_hd;
     let v = node_val.value;
     let next_hd = node_val.nd_next;
-    drop_ (is_list nd.nd_next (list_tl snap_xs));
+    with nd. assert (AP.persistent_pts_to old_hd nd ** pure (Cons? (reveal xs) /\ nd.value == List.Tot.hd (reveal xs)) ** is_list nd.nd_next (list_tl (reveal xs)));
+    drop_ (is_list nd.nd_next (list_tl (reveal xs)));
     rewrite (AP.persistent_pts_to old_hd nd) as
             (AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
-    later_credit_buy 1;
-    let xs = au_open tok;
-    unfold scont2;
     let b = try_pop2 s old_hd next_hd v;
     if b {
       elim_cond_true _ _;
       fold (scont2 s.nm (list_tl (reveal xs)));
       fold (pop_post2 s.nm (reveal xs) (Some v));
+      later_credit_buy 1;
       au_commit tok (reveal xs) (Some v);
     } else {
       elim_cond_false _ _;
       fold (scont2 s.nm xs);
+      later_credit_buy 1;
       au_abort tok (reveal xs);
       pop_loop2 s tok ()
     }

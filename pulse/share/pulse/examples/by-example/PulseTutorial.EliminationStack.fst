@@ -251,7 +251,7 @@ fn try_push_es (#t:Type0) (s:elim_stack t) (v:t) (old_hd : B.box (es_node t))
 (* ================================================================ *)
 
 fn rec push_loop (#t:Type0) (s:elim_stack t) (v:t)
-    (tok : au_token (list t) unit
+    (tok : au_token emp_inames (list t) unit
       (fun xs -> es_content s.nm xs)
       (fun xs _ -> es_content s.nm (Cons v xs))
       (fun xs _ -> es_content s.nm (Cons v xs)))
@@ -267,6 +267,7 @@ fn rec push_loop (#t:Type0) (s:elim_stack t) (v:t)
   if b {
     elim_cond_true _ _;
     fold (es_content s.nm (Cons v xs));
+    later_credit_buy 1;
     au_commit tok (reveal xs) ();
   } else {
     elim_cond_false _ _;
@@ -282,13 +283,13 @@ fn rec push_loop (#t:Type0) (s:elim_stack t) (v:t)
 ghost
 fn mk_es_push_trade (#t:Type0) (s : elim_stack t) (v : t) (#xs : erased (list t))
   requires emp
-  ensures (forall* (y:unit). es_content s.nm (Cons v xs) @==> es_content s.nm (Cons v xs))
+  ensures (forall* (y:unit). (later_credit 1 ** es_content s.nm (Cons v xs)) @==> es_content s.nm (Cons v xs))
 {
-  intro_forall #unit #(fun (y:unit) -> es_content s.nm (Cons v xs) @==> es_content s.nm (Cons v xs))
+  intro_forall #unit #(fun (y:unit) -> (later_credit 1 ** es_content s.nm (Cons v xs)) @==> es_content s.nm (Cons v xs))
     emp
     fn (y:unit) {
-      intro_trade (es_content s.nm (Cons v xs)) (es_content s.nm (Cons v xs)) emp
-        fn _ { () }
+      intro_trade (later_credit 1 ** es_content s.nm (Cons v xs)) (es_content s.nm (Cons v xs)) emp
+        fn _ { drop_ (later_credit 1) }
     }
 }
 
@@ -297,7 +298,7 @@ fn push_es (#t:Type0) (s:elim_stack t) (v:t)
   ensures is_es s ** (exists* ys. es_content s.nm ys)
 {
   mk_es_push_trade s v #'xs;
-  let tok = au_intro #(list t) #unit
+  let tok = au_intro #emp_inames #(list t) #unit
     #(fun xs -> es_content s.nm xs)
     #(fun xs _ -> es_content s.nm (Cons v xs))
     #(fun xs _ -> es_content s.nm (Cons v xs))
