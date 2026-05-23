@@ -156,7 +156,7 @@ val au_opened (#is:inames) (#a:Type0) (#b:Type0)
 ghost fn au_intro (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
-  requires alpha (reveal x0) ** (forall* (y:b). trade #is (beta (reveal x0) y) (phi (reveal x0) y))
+  requires alpha (reveal x0) ** (forall* (y:b). trade #is (later_credit 1 ** beta (reveal x0) y) (phi (reveal x0) y))
   returns tok : au_token is a b alpha beta phi
   ensures au_available tok
 
@@ -191,7 +191,7 @@ ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
     (tok : au_token is a b alpha beta phi)
     (x : erased a) (y : b)
   opens is
-  requires beta (reveal x) y ** au_opened tok (reveal x)
+  requires later_credit 1 ** beta (reveal x) y ** au_opened tok (reveal x)
   ensures phi (reveal x) y
 
 (** lat_elim: simple AU introduction + execution.
@@ -203,7 +203,7 @@ fn lat_elim (#is:inames) (#a:Type0) (#b:Type0)
     (x0 : erased a)
     (f : (tok : au_token is a b alpha beta phi) ->
       stt unit (au_available tok) (fun _ -> exists* (x:a) (y:b). phi x y))
-  requires alpha (reveal x0) ** (forall* (y:b). trade #is (beta (reveal x0) y) (phi (reveal x0) y))
+  requires alpha (reveal x0) ** (forall* (y:b). trade #is (later_credit 1 ** beta (reveal x0) y) (phi (reveal x0) y))
   ensures (exists* (x:a) (y:b). phi x y)
 
 (** lat_open: restricted form of Iris aacc_aupd_commit (line 387).
@@ -222,6 +222,6 @@ fn lat_open (#is:inames) (#a:Type0) (#b:Type0)
     (split_phi : (x:erased a) -> (y:erased b) ->
       stt_ghost unit emp_inames
         (phi (reveal x) (reveal y))
-        (fun _ -> (exists* (x':a). alpha x' ** (forall* (yy:b). trade #is (beta x' yy) (phi x' yy))) ** result (reveal x) (reveal y)))
-  requires alpha (reveal x0) ** (forall* (y:b). trade #is (beta (reveal x0) y) (phi (reveal x0) y))
-  ensures (exists* (x:a). alpha x ** (forall* (y:b). trade #is (beta x y) (phi x y))) ** (exists* (x:a) (y:b). result x y)
+        (fun _ -> (exists* (x':a). alpha x' ** (forall* (yy:b). trade #is (later_credit 1 ** beta x' yy) (phi x' yy))) ** result (reveal x) (reveal y)))
+  requires alpha (reveal x0) ** (forall* (y:b). trade #is (later_credit 1 ** beta (reveal x0) y) (phi (reveal x0) y))
+  ensures (exists* (x:a). alpha x ** (forall* (y:b). trade #is (later_credit 1 ** beta x y) (phi x y))) ** (exists* (x:a) (y:b). result x y)
