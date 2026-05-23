@@ -163,15 +163,16 @@ fn try_incr (c:counter) (old_n : U32.t) (#n : erased U32.t)
   }
 }
 
-(** incr_loop: AU open/commit/abort CAS retry loop *)
+(** incr_loop: AU open/commit/abort CAS retry loop, parametric in the client's postcondition. *)
 fn rec incr_loop (c:counter)
+    (#phi : U32.t -> unit -> slprop)
     (tok : au_token emp_inames U32.t unit
       (fun n -> ctr_content c.cg n)
       (fun n _ -> ctr_content c.cg (U32.add_mod n 1ul))
-      (fun n _ -> ctr_content c.cg (U32.add_mod n 1ul)))
+      phi)
     (_u:unit)
   requires is_ctr c ** au_available tok
-  ensures is_ctr c ** (exists* (n:U32.t). ctr_content c.cg (U32.add_mod n 1ul))
+  ensures is_ctr c ** (exists* (n:U32.t). phi n ())
 {
   let old_n = get c;
   later_credit_buy 1;
@@ -206,7 +207,8 @@ fn mk_incr_trade (c:counter) (#n : erased U32.t)
     }
 }
 
-(** increment: client-facing.
+(** increment: sequential client-facing wrapper.
+    Uses the identity trade (β = Φ); the logically atomic parametricity lives in incr_loop.
     Iris spec: <<< ∀∀ n, ctr_content γ n >>> incr c @ ↑N <<< ctr_content γ (n+1) | RET #n >>> *)
 fn increment (c:counter)
   requires is_ctr c ** ctr_content c.cg 'n

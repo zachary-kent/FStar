@@ -271,16 +271,17 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
   }
 }
 
-(** push_loop: CAS retry loop.
+(** push_loop: CAS retry loop, parametric in the client's postcondition.
     Alloc happens HERE (outside invariant). On failure, node is dropped. *)
 fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
+    (#phi : list t -> unit -> slprop)
     (tok : au_token emp_inames (list t) unit
       (fun xs -> scont2 s.nm xs)
       (fun xs _ -> scont2 s.nm (v :: xs))
-      (fun xs _ -> scont2 s.nm (v :: xs)))
+      phi)
     (_u:unit)
   requires is_ts2 s ** au_available tok
-  ensures is_ts2 s ** (exists* xs. scont2 s.nm xs)
+  ensures is_ts2 s ** (exists* xs. phi xs ())
 {
   // Step 1: Read head (single atomic read inside invariant)
   let old_hd = read_head2 s;
@@ -321,6 +322,8 @@ fn mk_id_trade2 (#t:Type0) (s : tstack2 t) (v : t) (#xs : erased (list t))
     }
 }
 
+(** Sequential wrapper: uses the identity trade (β = Φ).
+    The logically atomic parametricity lives in push_loop2. *)
 fn push2 (#t:Type0) (s:tstack2 t) (v:t)
   requires is_ts2 s ** scont2 s.nm 'xs
   ensures is_ts2 s ** (exists* ys. scont2 s.nm ys)
