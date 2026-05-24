@@ -309,6 +309,14 @@ fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
   }
 }
 
+(** Type witness: push_loop2 IS a lat_void *)
+let push_is_lat (#t:Type0) (s:tstack2 t) (v:t)
+  : lat_void emp_inames (list t)
+    (fun xs -> scont2 s.nm xs)
+    (fun xs _ -> scont2 s.nm (v :: xs))
+    (is_ts2 s)
+  = fun #phi tok _u -> push_loop2 s v #phi tok _u
+
 ghost
 fn mk_id_trade2 (#t:Type0) (s : tstack2 t) (v : t) (#xs : erased (list t))
   requires emp

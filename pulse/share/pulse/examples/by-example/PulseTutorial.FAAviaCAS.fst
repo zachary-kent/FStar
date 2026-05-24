@@ -183,6 +183,9 @@ fn try_add (c:counter) (old_n delta : U32.t) (#n : erased U32.t)
     point and the stored trade (β @==> Φ, supplied by the caller
     when creating the AU) does the rest. This is the key insight:
     the CAS loop is parametric in the client's postcondition. *)
+(** faa_loop: THE logically atomic FAA operation.
+    Type: lat — universally quantified over Φ.
+    The CAS loop provides β at the LP; the stored trade does the rest. *)
 fn rec faa_loop (c:counter) (delta:U32.t)
     (#is : inames)
     (#phi : U32.t -> U32.t -> slprop)
@@ -222,6 +225,16 @@ fn rec faa_loop (c:counter) (delta:U32.t)
     faa_loop c delta tok ()
   }
 }
+
+(** Type witness: faa_loop IS a lat.
+    This proves the CAS loop satisfies the logically atomic triple type,
+    which structurally enforces universal Φ. *)
+let faa_is_lat (c:counter) (delta:U32.t) (#is:inames)
+  : lat is U32.t U32.t
+    (fun n -> ctr_val c.cg n)
+    (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
+    (is_ctr c)
+  = faa_loop c delta
 
 (* ================================================================ *)
 (* Client 1: sequential owner (creates AU with identity trade)      *)
