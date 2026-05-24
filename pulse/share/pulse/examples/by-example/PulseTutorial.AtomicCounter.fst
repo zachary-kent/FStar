@@ -193,6 +193,14 @@ fn rec incr_loop (c:counter)
   }
 }
 
+(** Type witness: incr_loop IS a lat_void *)
+let incr_is_lat (c:counter)
+  : lat_void emp_inames U32.t
+    (fun n -> ctr_content c.cg n)
+    (fun n _ -> ctr_content c.cg (U32.add_mod n 1ul))
+    (is_ctr c)
+  = fun #phi tok _u -> incr_loop c #phi tok _u
+
 ghost
 fn mk_incr_trade (c:counter) (#n : erased U32.t)
   requires emp

@@ -225,3 +225,33 @@ fn lat_open (#is:inames) (#a:Type0) (#b:Type0)
         (fun _ -> (exists* (x':a). alpha x' ** (forall* (yy:b). trade #is (later_credit 1 ** beta x' yy) (phi x' yy))) ** result (reveal x) (reveal y)))
   requires alpha (reveal x0) ** (forall* (y:b). trade #is (later_credit 1 ** beta (reveal x0) y) (phi (reveal x0) y))
   ensures (exists* (x:a). alpha x ** (forall* (y:b). trade #is (later_credit 1 ** beta x y) (phi x y))) ** (exists* (x:a) (y:b). result x y)
+
+(* ================================================================ *)
+(* Logically Atomic Triple (LAT) type                               *)
+(* ================================================================ *)
+
+(** LAT type: structurally enforces universal quantification over Φ.
+    
+    Iris: <<< ∀∀ x, α(x) >>> e @ E <<< ∀∀ y, β(x,y), COMM Φ(x,y) >>>
+    Desugars to: ∀ Φ, AU α β Φ -∗ WP(e, λ r. ∃ x. Φ x r)
+    
+    The implementation CANNOT choose Φ — the caller provides it via the AU.
+    This prevents spec hacking (hardcoding Φ = β).
+    
+    Common case: b is the return type, so Φ x r connects the committed
+    witness x to the returned value r. *)
+let lat (is:inames) (a:Type0) (b:Type0)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (frame : slprop) =
+  (#phi : (a -> b -> slprop)) ->
+  (tok : au_token is a b alpha beta phi) ->
+  (_u : unit) ->
+  stt b (frame ** au_available tok) (fun r -> frame ** (exists* x. phi x r))
+
+(** LAT with separate return: for push/increment that return unit
+    but b is also unit in the AU. Postcondition: ∃ x. Φ x () *)
+let lat_void (is:inames) (a:Type0)
+    (alpha : a -> slprop) (beta : a -> unit -> slprop) (frame : slprop) =
+  (#phi : (a -> unit -> slprop)) ->
+  (tok : au_token is a unit alpha beta phi) ->
+  (_u : unit) ->
+  stt unit (frame ** au_available tok) (fun _ -> frame ** (exists* (x:a). phi x ()))
