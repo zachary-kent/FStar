@@ -94,17 +94,22 @@ fn read_snap (s:snapshot)
 (* write — atomic write of snapshot value (with version bump)       *)
 (* ================================================================ *)
 
-(** write_snap: Two-phase protocol.
-    Phase 1: FAA version (single LOCK XADD)
-    Phase 2: Write value (single MOV)
-    Correctness: read_with checks version stability across reads.
-    If version bumps between reads, reader retries. *)
-fn write_snap (s:snapshot) (new_v : U32.t)
-  requires is_snap s ** snap_content s.sg 'v
-  ensures is_snap s ** snap_content s.sg new_v
+(** write_snap: Two-phase protocol with AU/LAT spec.
+    Phase 1: FAA version (outside AU — pre-step)
+    Phase 2: Write value + commit AU (LP at the write)
+    No CAS retry needed — writes always succeed. *)
+fn write_snap_au (s:snapshot) (new_v : U32.t)
+    (#phi : U32.t -> unit -> slprop)
+    (tok : au_token emp_inames U32.t unit
+      (fun v -> snap_content s.sg v)
+      (fun v _ -> snap_content s.sg new_v)
+      phi)
+    (_u:unit)
+  requires is_snap s ** au_available tok
+  ensures is_snap s ** (exists* v. phi v ())
 {
   unfold is_snap;
-  // Phase 1: bump version (single FAA — x86 LOCK XADD)
+  // Phase 1: bump version (outside AU — not the LP)
   with_invariants unit emp_inames s.si (snap_inv_raw s)
     emp (fun _ -> emp)
   fn _ {
@@ -112,25 +117,64 @@ fn write_snap (s:snapshot) (new_v : U32.t)
     let _ = AP.atomic_faa s.version 1ul;
     fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
   };
-  // Phase 2: write new value + update ghost (single write — x86 MOV)
+  // Phase 2: open AU, write value (LP), commit
+  later_credit_buy 1;
+  let v = au_open tok;
   unfold snap_content;
   with_invariants unit emp_inames s.si (snap_inv_raw s)
-    (GR.pts_to s.sg.gr #0.5R 'v)
+    (GR.pts_to s.sg.gr #0.5R v)
     (fun _ -> GR.pts_to s.sg.gr #0.5R new_v)
   fn _ {
     unfold snap_inv_raw; unfold snap_inv_inner;
     AP.atomic_write s.value new_v;
     with v0 ver0. assert (B.pts_to s.value new_v ** B.pts_to s.version ver0 **
-      GR.pts_to s.sg.gr #0.5R v0 ** GR.pts_to s.sg.gr #0.5R 'v);
+      GR.pts_to s.sg.gr #0.5R v0 ** GR.pts_to s.sg.gr #0.5R v);
     GR.pts_to_injective_eq s.sg.gr;
-    rewrite each v0 as (reveal 'v);
+    rewrite each v0 as (reveal v);
     GR.gather s.sg.gr;
     GR.(s.sg.gr := new_v);
     GR.share s.sg.gr;
     fold (snap_inv_inner s.value s.version s.sg.gr); fold (snap_inv_raw s);
   };
   fold (snap_content s.sg new_v);
+  later_credit_buy 1;
+  au_commit tok (reveal v) ();
   fold (is_snap s)
+}
+
+(** Type witness: write_snap IS a lat_void *)
+let write_is_lat (s:snapshot) (new_v:U32.t)
+  : lat_void emp_inames U32.t
+    (fun v -> snap_content s.sg v)
+    (fun v _ -> snap_content s.sg new_v)
+    (is_snap s)
+  = fun #phi tok _u -> write_snap_au s new_v #phi tok _u
+
+ghost
+fn mk_snap_trade (s:snapshot) (new_v:U32.t) (#v : erased U32.t)
+  requires emp
+  ensures (forall* (y:unit). (later_credit 1 ** snap_content s.sg new_v) @==> snap_content s.sg new_v)
+{
+  intro_forall #unit #(fun (y:unit) -> (later_credit 1 ** snap_content s.sg new_v) @==> snap_content s.sg new_v)
+    emp
+    fn (y:unit) {
+      intro_trade (later_credit 1 ** snap_content s.sg new_v) (snap_content s.sg new_v) emp
+        fn _ { drop_ (later_credit 1) }
+    }
+}
+
+(** Sequential wrapper *)
+fn write_snap (s:snapshot) (new_v : U32.t)
+  requires is_snap s ** snap_content s.sg 'v
+  ensures is_snap s ** snap_content s.sg new_v
+{
+  mk_snap_trade s new_v #'v;
+  let tok = au_intro #emp_inames #U32.t #unit
+    #(fun v -> snap_content s.sg v)
+    #(fun v _ -> snap_content s.sg new_v)
+    #(fun v _ -> snap_content s.sg new_v)
+    'v;
+  write_snap_au s new_v tok ()
 }
 
 (* ================================================================ *)
