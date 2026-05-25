@@ -510,13 +510,15 @@ fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
 }
 
 fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
+    (#phi : list t -> option t -> slprop)
     (tok : au_token emp_inames (list t) (option t)
       (fun xs -> scont2 s.nm xs)
       (fun xs ov -> pop_post2 s.nm xs ov)
-      (fun xs ov -> pop_post2 s.nm xs ov))
+      phi)
     (_u:unit)
   requires is_ts2 s ** au_available tok
-  ensures is_ts2 s ** (exists* xs ov. pop_post2 s.nm xs ov)
+  returns ov : option t
+  ensures is_ts2 s ** (exists* xs. phi xs ov)
 {
   later_credit_buy 1;
   let xs = au_open tok;
@@ -528,6 +530,7 @@ fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
     fold (pop_post2 s.nm (reveal xs) (None #t));
     later_credit_buy 1;
     au_commit tok (reveal xs) (None #t);
+    (None #t)
   } else {
     let nd = read_is_list_head old_hd;
     let v = nd.value;
@@ -542,12 +545,52 @@ fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
       fold (pop_post2 s.nm (reveal xs) (Some v));
       later_credit_buy 1;
       au_commit tok (reveal xs) (Some v);
+      (Some v)
     } else {
       elim_cond_false _ _;
       fold (scont2 s.nm xs);
       later_credit_buy 1;
       au_abort tok (reveal xs);
-      pop_loop2 s tok ()
+      pop_loop2 s #phi tok ()
     }
   }
+}
+
+(** Type witness: pop_loop2 IS a lat *)
+let pop_is_lat (#t:Type0) (s:tstack2 t)
+  : lat emp_inames (list t) (option t)
+    (fun xs -> scont2 s.nm xs)
+    (fun xs ov -> pop_post2 s.nm xs ov)
+    (is_ts2 s)
+  = fun #phi tok _u -> pop_loop2 s #phi tok _u
+
+ghost
+fn mk_id_trade_pop (#t:Type0) (s : tstack2 t) (#xs : erased (list t))
+  requires emp
+  ensures (forall* (ov:option t). (later_credit 1 ** pop_post2 s.nm (reveal xs) ov) @==> pop_post2 s.nm (reveal xs) ov)
+{
+  intro_forall #(option t) #(fun (ov:option t) -> (later_credit 1 ** pop_post2 s.nm (reveal xs) ov) @==> pop_post2 s.nm (reveal xs) ov)
+    emp
+    fn (ov:option t) {
+      intro_trade (later_credit 1 ** pop_post2 s.nm (reveal xs) ov) (pop_post2 s.nm (reveal xs) ov) emp
+        fn _ { drop_ (later_credit 1) }
+    }
+}
+
+(** Sequential pop wrapper *)
+fn pop2 (#t:Type0) (s:tstack2 t)
+  requires is_ts2 s ** scont2 s.nm 'xs
+  returns ov : option t
+  ensures is_ts2 s ** (exists* ys. scont2 s.nm ys)
+{
+  mk_id_trade_pop s #'xs;
+  let tok = au_intro #emp_inames #(list t) #(option t)
+    #(fun xs -> scont2 s.nm xs)
+    #(fun xs ov -> pop_post2 s.nm xs ov)
+    #(fun xs ov -> pop_post2 s.nm xs ov)
+    'xs;
+  let ov = pop_loop2 s tok ();
+  with xs0. assert (pop_post2 s.nm xs0 ov);
+  unfold pop_post2;
+  ov
 }
