@@ -15,6 +15,7 @@ module PulseTutorial.TreiberStack2
 open Pulse.Lib.Pervasives
 open Pulse.Lib.LogicalAtomicity
 open Pulse.Lib.AtomicPrimitives
+open Pulse.Lib.PersistentPtsTo
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
@@ -55,43 +56,7 @@ noeq type node (t:Type0) = { value : t; nd_next : B.box (node t); }
 let is_null_node (#t:Type0) (n : B.box (node t)) : bool = B.is_null n
 
 (* ================================================================ *)
-(* Persistent points-to: ∃ q, l ↦{q} v  (Iris l ↦□ v)             *)
-(* Duplicable because any fraction can be split: q → q/2 + q/2     *)
-(* ================================================================ *)
-
-
-ghost fn make_persistent (#a:Type0) (r : B.box a) (#v : erased a) (#p:perm)
-  requires B.pts_to r #p v
-  ensures AP.persistent_pts_to r (reveal v)
-{
-  fold (AP.persistent_pts_to r (reveal v))
-}
-
-ghost fn dup_persistent (#a:Type0) (r : B.box a) (#v : a)
-  requires AP.persistent_pts_to r v
-  ensures AP.persistent_pts_to r v ** AP.persistent_pts_to r v
-{
-  unfold AP.persistent_pts_to;
-  B.share r;
-  fold (AP.persistent_pts_to r v);
-  fold (AP.persistent_pts_to r v)
-}
-
-atomic fn read_persistent (#a:Type0) (r : B.box a) (#v : erased a)
-  preserves AP.persistent_pts_to r (reveal v)
-  returns x : a
-  ensures pure (x == reveal v)
-{
-  dup_persistent r;
-  unfold AP.persistent_pts_to;
-  with p. assert (B.pts_to r #p (reveal v));
-  let x = atomic_read r;
-  drop_ (B.pts_to r #p (reveal v));
-  x
-}
-
-(* ================================================================ *)
-(* Persistent is_list: uses AP.persistent_pts_to for node contents     *)
+(* Persistent is_list: uses persistent_pts_to for node contents     *)
 (* Duplicable — can be used outside the invariant                   *)
 (* ================================================================ *)
 
@@ -100,7 +65,7 @@ let rec is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
   match xs with
   | [] -> pure (hd == B.null)
   | x :: rest -> exists* (nd : node t).
-      AP.persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest
+      persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest
 
 ghost fn rec dup_is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
   requires is_list hd xs
@@ -117,7 +82,7 @@ ghost fn rec dup_is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
     }
     Cons x rest -> {
       unfold is_list;
-      with nd. assert (AP.persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
+      with nd. assert (persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
       dup_persistent hd #nd;
       dup_is_list nd.nd_next rest;
       fold (is_list hd (x :: rest));
@@ -204,7 +169,7 @@ fn read_head2 (#t:Type0) (s:tstack2 t)
 fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
     (#xs : erased (list t))
   requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
-           AP.persistent_pts_to new_node ({ value = v; nd_next = old_hd })
+           persistent_pts_to new_node ({ value = v; nd_next = old_hd })
   returns b : bool
   ensures AP.cond b
     (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
@@ -213,7 +178,7 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
   unfold is_ts2;
   let b = with_invariants bool emp_inames s.inm (sinv s)
     (GR.pts_to s.nm.gr #0.5R xs **
-     AP.persistent_pts_to new_node ({ value = v; nd_next = old_hd }))
+     persistent_pts_to new_node ({ value = v; nd_next = old_hd }))
     (fun b -> AP.cond b
       (GR.pts_to s.nm.gr #0.5R (v :: xs))
       (GR.pts_to s.nm.gr #0.5R xs))
@@ -226,12 +191,12 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
         B.pts_to s.head new_node ** pure (reveal (hide hd0) == old_hd) **
         is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
         GR.pts_to s.nm.gr #0.5R xs **
-        AP.persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
+        persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
       GR.pts_to_injective_eq s.nm.gr;
       rewrite each xs0 as (reveal xs);
       rewrite each hd0 as old_hd;
       // Build is_list new_node (v :: xs) from:
-      //   AP.persistent_pts_to new_node {value=v, next=old_hd}
+      //   persistent_pts_to new_node {value=v, next=old_hd}
       //   is_list old_hd xs (from invariant, persistent)
       fold (is_list new_node (v :: reveal xs));
       // Update ghost
@@ -245,8 +210,8 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
       true
     } else {
       elim_cond_false _ _;
-      // Drop the AP.persistent_pts_to (it's duplicable, safe to drop)
-      drop_ (AP.persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
+      // Drop the persistent_pts_to (it's duplicable, safe to drop)
+      drop_ (persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
       fold (sinv_inner s.head s.nm.gr); fold (sinv s);
       fold (AP.cond false
         (GR.pts_to s.nm.gr #0.5R (v :: xs))
@@ -358,9 +323,10 @@ let pop_post2 (#t:Type0) (g:ts_ghost t) (xs:list t) (ov:option t) : slprop =
 
 ghost fn is_list_unfold_non_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
   requires is_list hd xs ** pure (not (B.is_null hd))
-  ensures exists* (nd : node t).
-    AP.persistent_pts_to hd nd ** pure (Cons? xs /\ nd.value == List.Tot.hd xs) **
-    is_list nd.nd_next (list_tl xs)
+  returns nd : erased (node t)
+  ensures persistent_pts_to hd (reveal nd) **
+          pure (Cons? xs /\ (reveal nd).value == List.Tot.hd xs) **
+          is_list (reveal nd).nd_next (list_tl xs)
 {
   match xs {
     Nil -> {
@@ -369,8 +335,9 @@ ghost fn is_list_unfold_non_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
     }
     Cons x rest -> {
       unfold is_list;
-      with nd. assert (AP.persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
-      rewrite (is_list nd.nd_next rest) as (is_list nd.nd_next (list_tl xs))
+      with nd0. assert (persistent_pts_to hd nd0 ** pure (nd0.value == x) ** is_list nd0.nd_next rest);
+      rewrite (is_list nd0.nd_next rest) as (is_list nd0.nd_next (list_tl xs));
+      hide nd0
     }
   }
 }
@@ -385,8 +352,8 @@ ghost fn is_list_unfold_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
     }
     Cons x rest -> {
       unfold is_list;
-      with nd. assert (AP.persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
-      unfold (AP.persistent_pts_to hd nd);
+      with nd. assert (persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
+      unfold (persistent_pts_to hd nd);
       with p. assert (B.pts_to hd #p nd);
       B.pts_to_not_null hd;
       unreachable ()
@@ -395,7 +362,21 @@ ghost fn is_list_unfold_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
 }
 
 
-(** read_head_snap: returns head pointer. is_list snapshot in implicit 'xs *)
+(** read_is_list_head: read node contents from persistent is_list.
+    Wraps ghost unfold + physical read in a single fn boundary,
+    avoiding the ghost-scope issue in callers. *)
+fn read_is_list_head (#t:Type0) (hd : B.box (node t)) (#xs : erased (list t))
+  requires is_list hd (reveal xs) ** pure (not (B.is_null hd))
+  returns nd : node t
+  ensures persistent_pts_to hd nd **
+          pure (Cons? (reveal xs) /\ nd.value == List.Tot.hd (reveal xs)) **
+          is_list nd.nd_next (list_tl (reveal xs))
+{
+  let _nd_e = is_list_unfold_non_null hd (reveal xs);
+  let nd = read_persistent hd;
+  rewrite each (reveal _nd_e) as nd;
+  nd
+}
 
 (** read_head_snap: read head AND get a persistent is_list snapshot. *)
 fn read_head_snap (#t:Type0) (s:tstack2 t)
@@ -446,12 +427,12 @@ fn read_head_for_xs (#t:Type0) (s:tstack2 t) (#xs : erased (list t))
 (** try_pop2: CAS head from old_hd to next_hd.
     Faithful to Iris: single atomic CAS inside with_invariants.
     Node contents (v, next_hd) were read OUTSIDE the invariant using
-    persistent is_list. The AP.persistent_pts_to witnesses that the node
+    persistent is_list. The persistent_pts_to witnesses that the node
     contains {value=v, nd_next=next_hd}. *)
 fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
     (v : t) (#xs : erased (list t))
   requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
-           AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+           persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
            pure (not (B.is_null old_hd))
   returns b : bool
   ensures AP.cond b
@@ -461,7 +442,7 @@ fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
   unfold is_ts2;
   let b = with_invariants bool emp_inames s.inm (sinv s)
     (GR.pts_to s.nm.gr #0.5R xs **
-     AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }))
+     persistent_pts_to old_hd ({ value = v; nd_next = next_hd }))
     (fun b -> AP.cond b
       (GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
       (GR.pts_to s.nm.gr #0.5R xs))
@@ -475,20 +456,19 @@ fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
         B.pts_to s.head next_hd ** pure (reveal (hide hd0) == old_hd) **
         is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
         GR.pts_to s.nm.gr #0.5R xs **
-        AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+        persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
       GR.pts_to_injective_eq s.nm.gr;
       rewrite each xs0 as (reveal xs);
       rewrite each hd0 as old_hd;
       // old_hd is non-null, so xs is Cons
-      is_list_unfold_non_null old_hd (reveal xs);
-      with nd. assert (AP.persistent_pts_to old_hd nd ** pure (Cons? (reveal xs) /\ nd.value == List.Tot.hd (reveal xs)) ** is_list nd.nd_next (list_tl (reveal xs)));
-      // Prove nd == {value=v, nd_next=next_hd} via pts_to agreement
-      unfold (AP.persistent_pts_to old_hd nd);
-      with p1. assert (B.pts_to old_hd #p1 nd);
-      unfold (AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+      let nd_e = is_list_unfold_non_null old_hd (reveal xs);
+      // Prove reveal nd_e == {value=v, nd_next=next_hd} via pts_to agreement
+      unfold (persistent_pts_to old_hd (reveal nd_e));
+      with p1. assert (B.pts_to old_hd #p1 (reveal nd_e));
+      unfold (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
       with p2. assert (B.pts_to old_hd #p2 ({ value = v; nd_next = next_hd }));
       B.pts_to_injective_eq old_hd;
-      rewrite each nd as ({ value = v; nd_next = next_hd } <: node t);
+      rewrite each (reveal nd_e) as ({ value = v; nd_next = next_hd } <: node t);
       // Drop fractional pts_to remnants
       drop_ (B.pts_to old_hd #p1 ({ value = v; nd_next = next_hd }));
       drop_ (B.pts_to old_hd #p2 ({ value = v; nd_next = next_hd }));
@@ -504,7 +484,7 @@ fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
       true
     } else {
       elim_cond_false _ _;
-      drop_ (AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+      drop_ (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
       fold (sinv_inner s.head s.nm.gr); fold (sinv s);
       fold (AP.cond false
         (GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
@@ -549,14 +529,12 @@ fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
     later_credit_buy 1;
     au_commit tok (reveal xs) (None #t);
   } else {
-    is_list_unfold_non_null old_hd (reveal xs);
-    let node_val = read_persistent old_hd;
-    let v = node_val.value;
-    let next_hd = node_val.nd_next;
-    with nd. assert (AP.persistent_pts_to old_hd nd ** pure (Cons? (reveal xs) /\ nd.value == List.Tot.hd (reveal xs)) ** is_list nd.nd_next (list_tl (reveal xs)));
+    let nd = read_is_list_head old_hd;
+    let v = nd.value;
+    let next_hd = nd.nd_next;
     drop_ (is_list nd.nd_next (list_tl (reveal xs)));
-    rewrite (AP.persistent_pts_to old_hd nd) as
-            (AP.persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+    rewrite (persistent_pts_to old_hd nd) as
+            (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
     let b = try_pop2 s old_hd next_hd v;
     if b {
       elim_cond_true _ _;
