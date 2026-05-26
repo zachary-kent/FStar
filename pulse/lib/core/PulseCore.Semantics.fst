@@ -153,6 +153,15 @@ type m (#st:state u#s) : (a:Type u#a) -> st.pred -> post st a -> Type u#(max (ac
       decode:(nat -> c) ->  // decodes angel oracle nat to choice type
       k:(x:c -> Dv (m a pre post)) ->
       m a pre post
+  | Resolve: // atomically execute action + assert result matches prediction
+      #a:Type u#a ->
+      #post:post st a ->
+      #b:Type u#act ->
+      eq:(b -> b -> bool) ->  // decidable equality on b
+      prediction:b ->         // the angel's earlier choice (from Angel)
+      f:action st b ->        // the atomic action to execute
+      k:(x:b { eq x prediction } -> Dv (m a (f.post x) post)) ->
+      m a f.pre post
 
 /// The semantics comes in two levels:
 ///
@@ -177,6 +186,8 @@ type step_result (#st:state u#s) (a:Type u#a) (q:post st a) (frame:st.pred) =
           step_result a q frame
 
 #push-options "--z3rlimit 40"
+let rec loop #t () : Dv t = loop ()
+
 (**
  * [step f frame]: Reduces a single step of [f], while framing
  * the assertion [frame]
@@ -238,9 +249,18 @@ let rec step
       weaken <| return <| (Step #st #a #q #frame p reduct)
     in
     weaken <| bind (lift <| NST.angel()) k'
+  | Resolve eq prediction f k ->
+    let k' (x:_)
+    : Dv (pnst_sep st (step_result a q frame) (fuel-1) (fuel-1)
+                    (f.post x `st.star` frame)
+                    (fun v -> Step?.next v `st.star` frame))
+    = if eq x prediction
+      then let reduct = k x in
+           weaken (return (Step _ reduct))
+      else loop ()
+    in
+    weaken <| bind (PNST.lift <| (NST.lift <| f.step frame)) k'
 #pop-options
-
-let rec loop #t () : Dv t = loop ()
 
 (** The main partial correctness result:
  *    m computations can be interpreted into nmst_sep computations 
@@ -335,6 +355,8 @@ let rec mbind
       Par ml' k
     | Angel #_ #pre #_ #c decode k ->
       Angel decode (fun x -> mbind (k x) g)
+    | Resolve eq prediction f k ->
+      Resolve eq prediction f (fun x -> mbind (k x) g)
 
 let act_as_m0
     (#st:state u#s)
@@ -427,6 +449,8 @@ let rec frame (#st:state u#s)
        Par m0 k'
      | Angel #_ #pre #post #c decode k ->
        Angel decode (fun x -> frame fr (k x))
+     | Resolve eq prediction f k ->
+       Resolve eq prediction (frame_action f fr) (fun x -> frame fr (k x))
 
 let rec apply_hom (#st:state u#s)
               (hom: st.pred->st.pred
@@ -449,6 +473,8 @@ let rec apply_hom (#st:state u#s)
        Par m0' k'
      | Angel #_ #pre #post #c decode k ->
        Angel decode (fun x -> apply_hom hom hom_act (k x))
+     | Resolve eq prediction f k ->
+       Resolve eq prediction (hom_act f) (fun x -> apply_hom hom hom_act (k x))
 
 (**
  * [fork]: Parallel execution using fork
