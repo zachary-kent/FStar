@@ -145,11 +145,12 @@ type m (#st:state u#s) : (a:Type u#a) -> st.pred -> post st a -> Type u#(max (ac
       #post:post st a ->
       k:m a pre post ->
       m a (pre0 `st.star` pre) post
-  | Angel: // angelic (existential) choice — used for prophecy variables
+  | Angel: // angelic (existential) choice — reads from angel oracle
       #a:Type u#a ->
-      #pre:_ ->
+      #pre:st.pred ->
       #post:post st a ->
       #c:Type u#act ->
+      decode:(nat -> c) ->  // decodes angel oracle nat to choice type
       k:(x:c -> Dv (m a pre post)) ->
       m a pre post
 
@@ -175,7 +176,7 @@ type step_result (#st:state u#s) (a:Type u#a) (q:post st a) (frame:st.pred) =
           m:m a next q -> //the reduct
           step_result a q frame
 
-#push-options "--z3rlimit 10"
+#push-options "--z3rlimit 40"
 (**
  * [step f frame]: Reduces a single step of [f], while framing
  * the assertion [frame]
@@ -224,16 +225,19 @@ let rec step
                 (fun x -> return <| Step _ <| Par m0 (Step?.m x))
     in
     weaken <| bind (lift <| NST.flip()) choose 
-  | Angel #_ #pre #post #c k ->
-    // Angelic choice uses the tape to pick a witness.
-    // The tape provides bool values; we use magic/coercion to
-    // pick a c value. The adequacy theorem (∃tape) ensures
-    // a tape exists making this choice correct.
-    //
-    // For now: use admit() to pick the witness. This is the ONE
-    // admit in the entire semantics, justified by ITree-style
-    // angelic choice / prophecy adequacy.
-    admit ()
+  | Angel #_ #pre' #post' #c decode k ->
+    // Angelic choice: read from angel oracle, decode, continue.
+    // The angel oracle (nat -> nat) is part of the tape, existentially
+    // quantified in run_alt. For prophecy: ∃ oracle making all choices correct.
+    let k' (n:nat)
+    : Dv (pnst_sep st (step_result a q frame) (fuel-1) (fuel-1)
+                    (p `st.star` frame)
+                    (fun v -> Step?.next v `st.star` frame))
+    = let choice = decode n in
+      let reduct = k choice in
+      weaken <| return <| (Step #st #a #q #frame p reduct)
+    in
+    weaken <| bind (lift <| NST.angel()) k'
 #pop-options
 
 let rec loop #t () : Dv t = loop ()
@@ -261,6 +265,7 @@ let rec run (#st:state u#s)
     weaken <| bind (step f st.emp fuel) k
     
 let tape = nat -> bool
+let angel_tape = nat -> nat
 (** The main partial correctness result:
  *    m computations can be interpreted into nmst_sep computations 
  *)    
@@ -271,9 +276,10 @@ let run_alt (#st:state u#s)
             (f:m a pre post)
             (s0:st.s { st.interp (st.star pre (st.invariant s0)) s0 })
             (t:tape)
+            (at:angel_tape)
             (fuel: nat { st.budget s0 >= fuel })
 : Dv (res:(a & st.s) { st.interp (st.star (post res._1) (st.invariant res._2)) res._2 })
-= let (x, s, _) = repr (run f fuel) s0 t 0 in
+= let (x, s, _) = repr (run f fuel) s0 t at 0 in
   (x, s)
 
 
@@ -327,8 +333,8 @@ let rec mbind
          mbind ml (fun _ -> Ret #_ #(U.raise_t u#0 u#b unit) #(as_post st.emp) (U.raise_val u#0 u#b ()))
       in
       Par ml' k
-    | Angel #_ #pre #_ #c k ->
-      Angel (fun x -> mbind (k x) g)
+    | Angel #_ #pre #_ #c decode k ->
+      Angel decode (fun x -> mbind (k x) g)
 
 let act_as_m0
     (#st:state u#s)
@@ -419,8 +425,8 @@ let rec frame (#st:state u#s)
      | Par #_ #pre0 m0 #_ #prek #postk k ->
        let k' = frame fr k in
        Par m0 k'
-     | Angel #_ #pre #post #c k ->
-       Angel (fun x -> frame fr (k x))
+     | Angel #_ #pre #post #c decode k ->
+       Angel decode (fun x -> frame fr (k x))
 
 let rec apply_hom (#st:state u#s)
               (hom: st.pred->st.pred
@@ -441,8 +447,8 @@ let rec apply_hom (#st:state u#s)
        let k' = apply_hom hom hom_act k in
        assert as_post #st #(U.raise_t unit) st.emp == as_post (hom st.emp);
        Par m0' k'
-     | Angel #_ #pre #post #c k ->
-       Angel (fun x -> apply_hom hom hom_act (k x))
+     | Angel #_ #pre #post #c decode k ->
+       Angel decode (fun x -> apply_hom hom hom_act (k x))
 
 (**
  * [fork]: Parallel execution using fork

@@ -30,6 +30,7 @@ val nst
 val repr #s #a #pre #post (f:nst #s a pre post) :
   s0:s { pre s0 } ->
   (nat -> bool) ->
+  (nat -> nat) ->  // angelic oracle
   nat ->
   (res:(a & s & nat) {
     post s0 res._1 res._2
@@ -73,3 +74,8 @@ val weaken
 
 val flip (#s:Type u#s) ()
   : nst #s bool (fun _ -> True) (fun s0 x s1 -> s0 == s1)
+
+(** Angelic choice: read a nat from the angel oracle.
+    Used for prophecy variables / existential nondeterminism. *)
+val angel (#s:Type u#s) ()
+  : nst #s nat (fun _ -> True) (fun s0 x s1 -> s0 == s1)

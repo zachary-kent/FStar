@@ -34,6 +34,7 @@ val pnst
 val repr #s #a #pre #post (f:pnst #s a pre post) :
   s0:s { pre s0 } ->
   (nat -> bool) ->
+  (nat -> nat) ->  // angelic oracle
   nat ->
   Dv (res:(a & s & nat) {
     post s0 res._1 res._2

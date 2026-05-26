@@ -18,6 +18,7 @@ module PulseCore.PartialNondeterministicHoareStateMonad
 
 module NST = PulseCore.NondeterministicHoareStateMonad
 type tape = nat -> bool
+type angel_tape = nat -> nat
 type ctr = nat
 
 type pnst' (#s:Type u#s)
@@ -26,23 +27,24 @@ type pnst' (#s:Type u#s)
            (post:ens_t s a) =
   s0:s { pre s0 } ->
   tape ->
+  angel_tape ->
   ctr ->
   Dv (res:(a & s & ctr) {
     post s0 res._1 res._2
   })
 let pnst #s a pre post = unit -> Dv (pnst' #s a pre post)
 
-let repr #s #a #pre #post f = fun s0 t c -> f () s0 t c
+let repr #s #a #pre #post f = fun s0 t at c -> f () s0 t at c
 let lift #s #a #pre #post f =
-  fun () s0 t c -> let x, s1, c1 = NST.repr f s0 t c in x, s1, c1
+  fun () s0 t at c -> let x, s1, c1 = NST.repr f s0 t at c in x, s1, c1
 
 let return #s #a x =
-  fun () s0 t c -> x, s0, c
+  fun () s0 t at c -> x, s0, c
 
 let bind #s #a #b #req_f #ens_f #req_g #ens_g f g =
-  fun () s0 t c ->
-  let x, s1, c = f () s0 t c in
-  g x () s1 t c
+  fun () s0 t at c ->
+  let x, s1, c = f () s0 t at c in
+  g x () s1 t at c
 
 let weaken #s #a #req_f #ens_f #req_g #ens_g f =
-  fun () s0 t c -> f () s0 t c
+  fun () s0 t at c -> f () s0 t at c

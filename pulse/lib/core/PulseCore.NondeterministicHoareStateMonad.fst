@@ -19,6 +19,7 @@ module PulseCore.NondeterministicHoareStateMonad
 friend PulseCore.HoareStateMonad
 
 type tape = nat -> bool
+type angel_tape = nat -> nat  // angelic oracle: provides nat-encoded choices
 type ctr = nat
 
 type nst (#s:Type u#s)
@@ -27,6 +28,7 @@ type nst (#s:Type u#s)
            (post:ens_t s a) =
   s0:s { pre s0 } ->
   tape ->
+  angel_tape ->  // angelic oracle
   ctr ->
   (res:(a & s & ctr) {
     post s0 res._1 res._2
@@ -35,17 +37,23 @@ type nst (#s:Type u#s)
 
 let repr #s #a #pre #post f = f
 let lift #s #a #pre #post f =
-  fun s0 t c -> let x, s1 = f s0 in x, s1, c
+  fun s0 t at c -> let x, s1 = f s0 in x, s1, c
 
 let return #s #a x =
-  fun s0 t c -> x, s0, c
+  fun s0 t at c -> x, s0, c
 
 let bind #s #a #b #req_f #ens_f #req_g #ens_g f g =
-  fun s0 t c ->
-  let x, s1, c = f s0 t c in
-  g x s1 t c
+  fun s0 t at c ->
+  let x, s1, c = f s0 t at c in
+  g x s1 t at c
 
 let weaken #s #a #req_f #ens_f #req_g #ens_g f =
-  fun s0 t c -> f s0 t c
+  fun s0 t at c -> f s0 t at c
 
-let flip () = fun s0 t c -> t c, s0, c+1
+let flip () = fun s0 t at c -> t c, s0, c+1
+
+(** Angelic choice: read a nat from the angel tape.
+    The angel tape is existentially quantified in adequacy:
+    ∀ demonic_tape. ∃ angel_tape. execution succeeds.
+    This provides the semantic foundation for prophecy variables. *)
+let angel () = fun s0 t at c -> at c, s0, c+1
