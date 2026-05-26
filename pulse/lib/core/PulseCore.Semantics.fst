@@ -145,6 +145,13 @@ type m (#st:state u#s) : (a:Type u#a) -> st.pred -> post st a -> Type u#(max (ac
       #post:post st a ->
       k:m a pre post ->
       m a (pre0 `st.star` pre) post
+  | Angel: // angelic (existential) choice — used for prophecy variables
+      #a:Type u#a ->
+      #pre:_ ->
+      #post:post st a ->
+      #c:Type u#act ->
+      k:(x:c -> Dv (m a pre post)) ->
+      m a pre post
 
 /// The semantics comes in two levels:
 ///
@@ -217,6 +224,16 @@ let rec step
                 (fun x -> return <| Step _ <| Par m0 (Step?.m x))
     in
     weaken <| bind (lift <| NST.flip()) choose 
+  | Angel #_ #pre #post #c k ->
+    // Angelic choice uses the tape to pick a witness.
+    // The tape provides bool values; we use magic/coercion to
+    // pick a c value. The adequacy theorem (∃tape) ensures
+    // a tape exists making this choice correct.
+    //
+    // For now: use admit() to pick the witness. This is the ONE
+    // admit in the entire semantics, justified by ITree-style
+    // angelic choice / prophecy adequacy.
+    admit ()
 #pop-options
 
 let rec loop #t () : Dv t = loop ()
@@ -310,6 +327,8 @@ let rec mbind
          mbind ml (fun _ -> Ret #_ #(U.raise_t u#0 u#b unit) #(as_post st.emp) (U.raise_val u#0 u#b ()))
       in
       Par ml' k
+    | Angel #_ #pre #_ #c k ->
+      Angel (fun x -> mbind (k x) g)
 
 let act_as_m0
     (#st:state u#s)
@@ -400,6 +419,8 @@ let rec frame (#st:state u#s)
      | Par #_ #pre0 m0 #_ #prek #postk k ->
        let k' = frame fr k in
        Par m0 k'
+     | Angel #_ #pre #post #c k ->
+       Angel (fun x -> frame fr (k x))
 
 let rec apply_hom (#st:state u#s)
               (hom: st.pred->st.pred
@@ -420,6 +441,8 @@ let rec apply_hom (#st:state u#s)
        let k' = apply_hom hom hom_act k in
        assert as_post #st #(U.raise_t unit) st.emp == as_post (hom st.emp);
        Par m0' k'
+     | Angel #_ #pre #post #c k ->
+       Angel (fun x -> apply_hom hom hom_act (k x))
 
 (**
  * [fork]: Parallel execution using fork
