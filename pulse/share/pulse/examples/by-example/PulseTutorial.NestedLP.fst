@@ -312,9 +312,202 @@ let faa_nested_is_lat (c:counter) (delta:U32.t)
   = fun #phi tok _u -> faa_via_cas_llsc c delta #phi tok _u
 
 (* ================================================================ *)
-(* Sequential wrapper + client                                      *)
+(* Level 2b: MODULAR FAA via cas_via_llsc as BLACK BOX              *)
+(*                                                                  *)
+(* This version calls cas_via_llsc modularly, choosing Φ_inner so   *)
+(* that when the inner CAS commits, it commits the outer FAA AU     *)
+(* through the trade chain.                                         *)
+(*                                                                  *)
+(* Key insight: cas_via_llsc is a lat_void. We choose:              *)
+(*   Φ_inner(m, _) = phi_outer(n, old_n) ** pure (m == old_n)      *)
+(* The inner trade captures au_opened outer_tok and commits the     *)
+(* outer AU inside. For the m≠old_n branch, the trade has False     *)
+(* in hypothesis (pure (m == old_n) when m ≠ old_n), so it fires    *)
+(* vacuously. In practice, cas_via_llsc only commits at SC success  *)
+(* where m == old_n == n, so this branch is never reached.          *)
 (* ================================================================ *)
 
+(* ================================================================ *)
+(* Level 2b: MODULAR FAA via cas_via_llsc as BLACK BOX              *)
+(*                                                                  *)
+(* This version calls cas_via_llsc modularly. The inner CAS's Φ     *)
+(* commits the outer FAA's AU at the successful SC.                 *)
+(*                                                                  *)
+(* Design: The inner CAS AU has:                                    *)
+(*   α_inner(m) = ctr_val m ** au_opened outer_tok n ** pure(m==n)  *)
+(*   β_inner(m,_) = ctr_val(add(m,delta)) ** au_opened outer_tok n *)
+(*                  ** pure(m==n)                                   *)
+(* Only when m = old_n does SC succeed.                             *)
+(* Φ_inner(m,_) = phi(n, old_n)                                    *)
+(*                                                                  *)
+(* The trade converts β_inner → Φ_inner by committing the outer AU.*)
+(* Since β_inner carries pure(m==n), the trade can rewrite m→n.    *)
+(* ================================================================ *)
+
+(* ================================================================ *)
+(* Level 2b: MODULAR FAA via cas_via_llsc as BLACK BOX              *)
+(*                                                                  *)
+(* The inner CAS commits the outer FAA AU through a trade chain.    *)
+(*                                                                  *)
+(* Key trick: use a DIFFERENT inner CAS spec where β_inner carries  *)
+(* pure(m == old_n). try_sc already proves this on SC success.      *)
+(* The trade hypothesis then has this proof, enabling the rewrite   *)
+(* from ctr_val(add(old_n,delta)) to ctr_val(add(n,delta)).         *)
+(*                                                                  *)
+(* Inner CAS spec:                                                  *)
+(*   α(m) = ctr_val m                                               *)
+(*   β(m,_) = ctr_val(add(old_n,delta)) ** pure(m == old_n)        *)
+(*     (only the success case; failure aborts+retries inside CAS)   *)
+(*   Φ(m,_) = phi_outer(n, old_n)                                  *)
+(*                                                                  *)
+(* The trade: lc 1 ** ctr_val(add(old_n,d)) ** pure(m==old_n)      *)
+(*   @==> phi_outer(n, old_n)                                       *)
+(* Body: rewrite m→n (since m==old_n and n==old_n from ghost),      *)
+(*   fold β_outer, au_commit outer → phi_outer.                     *)
+(* ================================================================ *)
+
+(** cas_commit_only: variant of cas_via_llsc that only commits on success.
+    β always carries the full post-CAS state + success proof.
+    On LL mismatch or SC failure, aborts and retries. *)
+fn rec cas_commit_only (c:counter) (expected new_val : U32.t)
+    (#phi : U32.t -> unit -> slprop)
+    (tok : au_token emp_inames U32.t unit
+      (fun n -> ctr_val c.cg n)
+      (fun n _ -> ctr_val c.cg new_val ** pure (n == expected))
+      phi)
+    (_u:unit)
+  requires is_ctr c ** au_available tok
+  ensures is_ctr c ** (exists* n. phi n ())
+{
+  // LL: read current value
+  unfold is_ctr;
+  let cur = with_invariants U32.t emp_inames c.ci (ctr_inv c)
+    emp (fun _ -> emp)
+  fn _ {
+    unfold ctr_inv; unfold ctr_inv_inner;
+    let n = ll c.loc;
+    fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+    n
+  };
+  fold (is_ctr c);
+  // Open AU
+  later_credit_buy 1;
+  let n = au_open tok;
+  unfold ctr_val;
+  if (cur = expected) {
+    // Value matches: try SC
+    let b = try_sc c expected new_val;
+    if b {
+      elim_cond_true _ _;
+      // SC succeeded: n == expected (from ghost agreement + SC proof)
+      fold (ctr_val c.cg new_val);
+      later_credit_buy 1;
+      au_commit tok (reveal n) ();
+    } else {
+      elim_cond_false _ _;
+      fold (ctr_val c.cg n);
+      later_credit_buy 1;
+      au_abort tok (reveal n);
+      cas_commit_only c expected new_val tok ()
+    }
+  } else {
+    // LL mismatch — abort and retry
+    fold (ctr_val c.cg n);
+    later_credit_buy 1;
+    au_abort tok (reveal n);
+    cas_commit_only c expected new_val tok ()
+  }
+}
+
+(** Type witness *)
+let cas_commit_is_lat (c:counter) (expected new_val : U32.t)
+  : lat_void emp_inames U32.t
+    (fun n -> ctr_val c.cg n)
+    (fun n _ -> ctr_val c.cg new_val ** pure (n == expected))
+    (is_ctr c)
+  = fun #phi tok _u -> cas_commit_only c expected new_val #phi tok _u
+
+(** Modular FAA: calls cas_commit_only as a BLACK BOX.
+    The inner CAS's Φ commits the outer FAA's AU at the SC LP.
+    True nested LP via trade chain. *)
+fn rec faa_modular (c:counter) (delta:U32.t)
+    (#phi : U32.t -> U32.t -> slprop)
+    (tok : au_token emp_inames U32.t U32.t
+      (fun n -> ctr_val c.cg n)
+      (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
+      phi)
+    (_u:unit)
+  requires is_ctr c ** au_available tok
+  returns old : U32.t
+  ensures is_ctr c ** (exists* n. phi n old)
+{
+  // Read current value (outside AU)
+  let old_n = read_ctr c;
+  // Open outer FAA AU
+  later_credit_buy 1;
+  let n = au_open tok;
+  unfold ctr_val;
+
+  // Build inner CAS trade: β_inner @==> Φ_inner
+  // β_inner(m,_) = ctr_val(add(old_n,delta)) ** pure(m == old_n)
+  // Φ_inner(m,_) = phi(n, old_n)
+  //
+  // Trade captures: au_opened tok n
+  // Trade body:
+  //   1. From pure(m == old_n), we know the CAS succeeded at value old_n
+  //   2. The inner AU's m == old_n, and ghost agreement gives n == m == old_n
+  //   3. Rewrite ctr_val(add(old_n,delta)) as ctr_val(add(n,delta))
+  //   4. Fold β_outer(n, old_n)
+  //   5. au_commit tok → phi(n, old_n)
+
+  intro_forall #unit
+    #(fun (_:unit) ->
+      (later_credit 1 ** ctr_val c.cg (U32.add_mod old_n delta) ** pure (reveal n == old_n))
+      @==> phi (reveal n) old_n)
+    (au_opened tok (reveal n))
+    fn (_y:unit) {
+      intro_trade
+        (later_credit 1 ** ctr_val c.cg (U32.add_mod old_n delta) ** pure (reveal n == old_n))
+        (phi (reveal n) old_n)
+        (au_opened tok (reveal n))
+        fn _ {
+          // Inside trade: we have
+          //   later_credit 1
+          //   ctr_val c.cg (add(old_n, delta))
+          //   pure (reveal n == old_n)     ← from β_inner
+          //   au_opened tok (reveal n)     ← from trade frame
+          //
+          // Since n == old_n:
+          //   ctr_val(add(old_n, delta)) = ctr_val(add(n, delta))
+          rewrite (ctr_val c.cg (U32.add_mod old_n delta))
+               as (ctr_val c.cg (U32.add_mod (reveal n) delta));
+          // Commit outer AU: β_outer(n, old_n) = ctr_val(add(n,delta)) ** pure(old_n == n)
+          au_commit tok (reveal n) old_n
+        }
+    };
+
+  // Create inner AU
+  fold (ctr_val c.cg (reveal n));
+  let inner_tok = au_intro #emp_inames #U32.t #unit
+    #(fun m -> ctr_val c.cg m)
+    #(fun m _ -> ctr_val c.cg (U32.add_mod old_n delta) ** pure (m == old_n))
+    #(fun m _ -> phi (reveal n) old_n)
+    (reveal n);
+
+  // Call inner CAS as BLACK BOX — at SC success, inner commit fires
+  // trade, which commits outer AU. TRUE NESTED LP!
+  cas_commit_only c old_n (U32.add_mod old_n delta) inner_tok ();
+  with m. assert (phi (reveal n) old_n);
+  old_n
+}
+
+(** Type witness for modular FAA *)
+let faa_modular_is_lat (c:counter) (delta:U32.t)
+  : lat emp_inames U32.t U32.t
+    (fun n -> ctr_val c.cg n)
+    (fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
+    (is_ctr c)
+  = fun #phi tok _u -> faa_modular c delta #phi tok _u
 ghost
 fn mk_faa_trade (c:counter) (delta:U32.t) (#n : erased U32.t)
   requires emp
