@@ -93,3 +93,29 @@ val atomic_faa (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
   : stt_atomic U32.t #Observable emp_inames
     (B.pts_to r cur) (fun old -> B.pts_to r (U32.add_mod old delta) ** pure (old == reveal cur))
 
+(* ================================================================ *)
+(* LL/SC — Load-Linked / Store-Conditional                          *)
+(*                                                                  *)
+(* Simplified model: SC succeeds iff current value == LL'd value.   *)
+(* Real LL/SC may fail spuriously; we model the weaker guarantee:   *)
+(*   - SC success ⟹ value unchanged since LL                       *)
+(*   - SC failure ⟹ no information (may be spurious)               *)
+(* This is sufficient to implement CAS, which is the use case.     *)
+(*                                                                  *)
+(* ARM: LDXR/STXR. RISC-V: LR/SC. MIPS: LL/SC.                    *)
+(* ================================================================ *)
+
+(** LL — load-linked: atomic read that returns a ghost token. *)
+val ll (#a:eqtype) (r : B.box a) (#v : erased a) (#p:perm)
+  : stt_atomic a #Observable emp_inames
+    (B.pts_to r #p v) (fun x -> B.pts_to r #p v ** pure (x == reveal v))
+
+(** SC — store-conditional: attempts to write if value unchanged.
+    Success means old value matched expected (from LL).
+    Failure may be spurious — no information about current value. *)
+val sc (#a:eqtype) (r : B.box a) (new_val : a) (expected : a) (#cur : erased a)
+  : stt_atomic bool #Observable emp_inames
+    (B.pts_to r cur)
+    (fun b -> cond b (B.pts_to r new_val ** pure (reveal cur == expected))
+                     (B.pts_to r cur))
+
