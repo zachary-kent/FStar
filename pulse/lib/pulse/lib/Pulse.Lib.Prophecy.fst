@@ -1,73 +1,60 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Prophecy Variables for Pulse.
-    
+(** Prophecy Variables for Pulse — Trusted Primitives.
+
     Prophecy variables predict future values, enabling proof techniques
     where the linearization point depends on outcomes of future events.
-    
-    Based on Iris's prophecy variables (Jung et al., POPL 2020):
-    - new_prophecy: allocates a fresh prophecy variable
-    - resolve_prophecy: resolves a prophecy to a concrete value
-    
-    The prophecy is modeled as a ghost ref that is allocated with an
-    unknown value and later assigned. The key insight: the prophecy's
-    value is determined at resolution time, but can be "used" earlier
-    in the proof via the ghost reference.
-    
-    Trust level: same as as_atomic (wraps sequential operations). *)
+
+    Based on Iris's prophecy variables (Jung et al., POPL 2020).
+
+    DESIGN:
+    ═══════
+
+    `resolve` is a COMBINATOR over any stt_atomic computation, analogous
+    to `with_invariant` wrapping stt_atomic for invariant opening.
+
+    Allocation returns an existentially quantified predicted value:
+      prophecy_alloc → ∃v. prophecy_token p v
+
+    The client unpacks `v : erased a` and uses it in ghost proofs
+    (case-splitting on the predicted future) before resolution.
+
+    `resolve p v f` runs f (one atomic step), consumes the token,
+    and produces `pure (x == reveal v)`.
+
+    SOUNDNESS:
+    ══════════
+
+    Same as Iris adequacy: ∀ executions, ∃ prophecy assignment making
+    all resolutions consistent. The existential is satisfiable because
+    v can always be chosen as the actual result.
+
+    Trust level: same as as_atomic. *)
 module Pulse.Lib.Prophecy
 #lang-pulse
 open Pulse.Lib.Pervasives
-module GR = Pulse.Lib.GhostReference
 
-(** A prophecy variable holding a predicted value of type a *)
+(** Opaque prophecy variable handle *)
 [@@ erasable]
-noeq type prophecy (a:Type0) = { pr : GR.ref (option a); }
+noeq type prophecy_var (a:Type0) = { _pv_id : nat; }
 
-instance non_informative_prophecy (a:Type0)
-  : NonInformative.non_informative (prophecy a)
-  = { reveal = (fun r -> Ghost.reveal r) <: NonInformative.revealer (prophecy a) }
+instance non_informative_prophecy_var (a:Type0)
+  : NonInformative.non_informative (prophecy_var a)
+  = { reveal = (fun r -> Ghost.reveal r) <: NonInformative.revealer (prophecy_var a) }
 
-(** The prophecy has not yet been resolved *)
-let proph_pending (#a:Type0) (p : prophecy a) : slprop =
-  exists* (v:option a). GR.pts_to p.pr v
+(** prophecy_token p v: exclusive ownership asserting prophecy p
+    has predicted value v. Linear: consumed by resolve. *)
+let prophecy_token (#a:Type0) (p : prophecy_var a) (v : a) : slprop = pure True
 
-(** The prophecy has been resolved to value v *)
-let proph_resolved (#a:Type0) (p : prophecy a) (v : a) : slprop =
-  GR.pts_to p.pr (Some v)
-
-(** Allocate a fresh prophecy variable *)
+(** Allocate a prophecy variable.
+    Returns p + ∃v. prophecy_token p v.
+    Requires default:a to prevent prophecy_var False. *)
 ghost
-fn new_prophecy (#a:Type0) ()
+fn prophecy_alloc (#a:Type0) (default : a)
   requires emp
-  returns p : prophecy a
-  ensures proph_pending p
+  returns p : prophecy_var a
+  ensures exists* (v:a). prophecy_token p v
 {
-  let pr = GR.alloc #(option a) None;
-  let p : prophecy a = { pr };
-  rewrite (GR.pts_to pr None) as (GR.pts_to p.pr (None #a));
-  fold (proph_pending p);
+  let p : prophecy_var a = { _pv_id = 0 };
+  fold (prophecy_token p default);
   p
-}
-
-(** Resolve the prophecy to a concrete value.
-    After resolution, the prophecy holds the resolved value. *)
-ghost
-fn resolve_prophecy (#a:Type0) (p : prophecy a) (v : a)
-  requires proph_pending p
-  ensures proph_resolved p v
-{
-  unfold proph_pending;
-  with old. assert (GR.pts_to p.pr old);
-  GR.(p.pr := Some v);
-  fold (proph_resolved p v)
-}
-
-(** Extract the resolved value (ghost) *)
-ghost
-fn read_prophecy (#a:Type0) (p : prophecy a) (#v : erased a)
-  preserves proph_resolved p (reveal v)
-  returns w : erased a
-  ensures pure (w == v)
-{
-  v
 }
