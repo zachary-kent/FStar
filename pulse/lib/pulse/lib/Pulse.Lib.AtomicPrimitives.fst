@@ -140,3 +140,46 @@ let atomic_faa (r : B.box U32.t) (delta : U32.t) (#cur : erased U32.t)
     (B.pts_to r cur) (fun old -> B.pts_to r (U32.add_mod old delta) ** pure (old == reveal cur))
   = Pulse.Lib.Core.as_atomic _ _ (atomic_faa_impl r delta #cur)
 
+(* ================================================================ *)
+(* LL — load-linked (model: same as atomic read)                    *)
+(* ================================================================ *)
+
+fn ll_impl (#a:eqtype) (r : B.box a) (#v : erased a) (#p:perm)
+  preserves r |-> Frac p v
+  returns x : a
+  ensures rewrites_to x (reveal v)
+{ B.op_Bang r }
+
+let ll (#a:eqtype) (r : B.box a) (#v : erased a) (#p:perm)
+  : stt_atomic a #Observable emp_inames
+    (B.pts_to r #p v) (fun x -> B.pts_to r #p v ** pure (x == reveal v))
+  = Pulse.Lib.Core.as_atomic _ _ (ll_impl r #v #p)
+
+(* ================================================================ *)
+(* SC — store-conditional (model: same as CAS)                      *)
+(* ================================================================ *)
+
+fn sc_impl (#a:eqtype) (r : B.box a) (new_val : a) (expected : a) (#cur : erased a)
+  requires r |-> cur
+  returns b : bool
+  ensures cond b (r |-> new_val ** pure (reveal cur == expected))
+                 (r |-> cur)
+{
+  let v = B.op_Bang r;
+  if (v = expected) {
+    B.op_Colon_Equals r new_val;
+    fold (cond true (r |-> new_val ** pure (reveal cur == expected)) (r |-> cur));
+    true
+  } else {
+    fold (cond false (r |-> new_val ** pure (reveal cur == expected)) (r |-> cur));
+    false
+  }
+}
+
+let sc (#a:eqtype) (r : B.box a) (new_val : a) (expected : a) (#cur : erased a)
+  : stt_atomic bool #Observable emp_inames
+    (B.pts_to r cur)
+    (fun b -> cond b (B.pts_to r new_val ** pure (reveal cur == expected))
+                     (B.pts_to r cur))
+  = Pulse.Lib.Core.as_atomic _ _ (sc_impl r new_val expected #cur)
+
