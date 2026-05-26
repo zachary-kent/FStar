@@ -82,9 +82,13 @@ fn prophecy_agree (#a:Type0) (p : prophecy_var a) (#v1 #v2 : erased a)
   fold (prophecy_handle p (reveal v2))
 }
 
-(** resolve: run atomic step f, update prophecy to actual result.
+(** resolve: run computation f, update prophecy to actual result.
     Takes both token and handle. Returns both at actual value x.
-    ZERO ADMITS — uses ghost ref update. *)
+    ZERO ADMITS — uses ghost ref update.
+    
+    Note: after resolve, the token/handle are at value x.
+    The original predicted value v is gone. Use prophecy_resolve_eq
+    (in Pulse.Lib.Prophecy.Resolve) if you need pure (x == v). *)
 fn resolve (#a:Type0) (p : prophecy_var a) (#v : erased a)
     (#pre:slprop) (#post: a -> slprop)
     (f : unit -> stt a pre (fun x -> post x))
