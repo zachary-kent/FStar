@@ -35,7 +35,7 @@
   │ au_opened tok x      │ α(x) ∗ abort-cont ∗ commit-cont       │ ✓ protocol    │
   │                      │   (opened accessor state, line 16-20)  │ indexed by x  │
   ├──────────────────────┼─────────────────────────────────────────┼───────────────┤
-  │ au_intro             │ Not directly aupd_intro (line 276).    │ Simplified    │
+  │ au_intro             │ Not directly aupd_intro (line 276).    │ Concrete      │
   │                      │   Iris requires □(P -∗ atomic_acc ...) │ intro form    │
   │                      │   (persistent, coinductive accessor).   │               │
   │                      │   Pulse requires concrete α(x₀) + trade│               │
@@ -149,8 +149,8 @@ val au_opened (#is:inames) (#a:Type0) (#b:Type0)
 (** Introduction: deposit α(x₀) AND the commit contract ∀y. β(x₀,y) @==> Φ(x₀,y).
     
     Iris aupd_intro (line 276) requires □(P -∗ atomic_acc Eo Ei α P β Φ) — a
-    persistent, coinductive accessor premise. Our simplified form requires
-    concrete α(x₀) + trade instead. This is strictly more concrete: the client
+    persistent, coinductive accessor premise. Our concrete form requires
+    concrete α(x₀) + trade instead. This is strictly more explicit: the client
     must provide the initial abstract state and commit contract upfront.
     Gap: no coinductive/persistent accessor. *)
 ghost fn au_intro (#is:inames) (#a:Type0) (#b:Type0)
@@ -230,28 +230,25 @@ fn lat_open (#is:inames) (#a:Type0) (#b:Type0)
 (* Logically Atomic Triple (LAT) type                               *)
 (* ================================================================ *)
 
-(** LAT type: structurally enforces universal quantification over Φ.
-    
-    Iris: <<< ∀∀ x, α(x) >>> e @ E <<< ∀∀ y, β(x,y), COMM Φ(x,y) >>>
-    Desugars to: ∀ Φ, AU α β Φ -∗ WP(e, λ r. ∃ x. Φ x r)
-    
-    The implementation CANNOT choose Φ — the caller provides it via the AU.
-    This prevents spec hacking (hardcoding Φ = β).
-    
-    Common case: b is the return type, so Φ x r connects the committed
-    witness x to the returned value r. *)
+(** Direct Iris-style logically atomic triple.
+
+    This is the Pulse analogue of the common Iris surface form
+
+      <<{ ∀∀ x, α x }>> e @ E <<{ ∃∃ y, β x y | RET y }>>
+
+    rather than the lower-level AU-consumer shape.  A client chooses an
+    arbitrary ordinary postcondition [Phi] over the returned value.  The
+    implementation receives only an AU token whose commit continuation is
+    fixed to [fun x y -> Phi y].  Thus the implementation cannot choose,
+    inspect, or hard-code the client's postcondition; it can obtain [Phi r]
+    only by committing the AU with atomic postcondition [β x r].
+
+    The post-state witness [b] is also the return type.  Unit-returning
+    operations are ordinary instances with [b = unit]; no separate _void
+    variant is needed. *)
 let lat (is:inames) (a:Type0) (b:Type0)
     (alpha : a -> slprop) (beta : a -> b -> slprop) (frame : slprop) =
-  (#phi : (a -> b -> slprop)) ->
-  (tok : au_token is a b alpha beta phi) ->
+  phi:(b -> slprop) ->
+  (tok : au_token is a b alpha beta (fun (_x:a) (y:b) -> phi y)) ->
   (_u : unit) ->
-  stt b (frame ** au_available tok) (fun r -> frame ** (exists* x. phi x r))
-
-(** LAT with separate return: for push/increment that return unit
-    but b is also unit in the AU. Postcondition: ∃ x. Φ x () *)
-let lat_void (is:inames) (a:Type0)
-    (alpha : a -> slprop) (beta : a -> unit -> slprop) (frame : slprop) =
-  (#phi : (a -> unit -> slprop)) ->
-  (tok : au_token is a unit alpha beta phi) ->
-  (_u : unit) ->
-  stt unit (frame ** au_available tok) (fun _ -> frame ** (exists* (x:a). phi x ()))
+  stt b (frame ** au_available tok) (fun r -> frame ** phi r)

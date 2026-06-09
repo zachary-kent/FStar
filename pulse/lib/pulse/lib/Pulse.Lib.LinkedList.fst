@@ -700,4 +700,3 @@ fn reverse (#t:Type0) (x:llist t)
   rewrite (is_list _p _rev_pfx) as (is_list result (List.Tot.rev 'l));
   result
 }
-let llist_eq #t (x:llist t) (y:llist t) : b:bool{b <==> x == y} = if None? x && None? y then true else if Some? x && Some? y then Box.box_eq (Some?.v x) (Some?.v y) else false

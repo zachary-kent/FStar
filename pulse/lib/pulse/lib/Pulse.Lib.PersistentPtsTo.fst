@@ -26,7 +26,7 @@ ghost fn make_persistent (#a:Type0) (r : B.box a) (#v : erased a) (#p:perm)
 }
 
 (** Duplicate persistent ownership. *)
-ghost fn dup_persistent (#a:Type0) (r : B.box a) (#v : a)
+ghost fn persistent_pts_to_dup (#a:Type0) (r : B.box a) (#v : a)
   requires persistent_pts_to r v
   ensures persistent_pts_to r v ** persistent_pts_to r v
 {
@@ -36,6 +36,9 @@ ghost fn dup_persistent (#a:Type0) (r : B.box a) (#v : a)
   fold (persistent_pts_to r v)
 }
 
+instance duplicable_persistent_pts_to #a r v : duplicable (persistent_pts_to #a r v) =
+  { dup_f = fun _ -> persistent_pts_to_dup r #v }
+
 (** Read from persistent ownership — a non-atomic read.
     For use OUTSIDE invariants (no atomic step needed). *)
 fn read_persistent (#a:Type0) (r : B.box a) (#v : erased a)
@@ -43,7 +46,7 @@ fn read_persistent (#a:Type0) (r : B.box a) (#v : erased a)
   returns x : a
   ensures pure (x == reveal v)
 {
-  dup_persistent r #(reveal v);
+  dup (persistent_pts_to r (reveal v)) ();
   unfold (persistent_pts_to r (reveal v));
   with p. assert (B.pts_to r #p (reveal v));
   let x = B.op_Bang r;

@@ -1,16 +1,16 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Treiber Stack v2 — faithful to Iris/HeapLang atomicity model.
+(** Treiber Stack — faithful to Iris/HeapLang atomicity model.
     
     Uses only Pulse.Lib.AtomicPrimitives (single-step atomic ops).
     No as_atomic outside the kernel.
     
-    Key differences from v1:
+    Key design choices:
     - Nodes are raw boxes (not LinkedList), matching Iris's HeapLang encoding
     - Allocation happens OUTSIDE the invariant
     - Only CAS on the head pointer is inside the invariant
     - Ghost state tracks abstract list contents
     - Persistent is_list predicate (∃q. l↦{q}v) — duplicable, Iris-faithful *)
-module PulseTutorial.TreiberStack2
+module PulseTutorial.TreiberStack
 #lang-pulse
 open Pulse.Lib.Pervasives
 open Pulse.Lib.LogicalAtomicity
@@ -18,12 +18,9 @@ open Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.PersistentPtsTo
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
+module AP = Pulse.Lib.Primitives
 open Pulse.Lib.Inv
-open Pulse.Lib.Trade
-open Pulse.Lib.Forall
-module AP = Pulse.Lib.AtomicPrimitives
 
-(* Use AtomicPrimitives.cond for consistency *)
 ghost fn elim_cond_true (p q : slprop)
   requires AP.cond true p q
   ensures p
@@ -64,7 +61,7 @@ let rec is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
   | x :: rest -> exists* (nd : node t).
       persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest
 
-ghost fn rec dup_is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
+ghost fn rec is_list_dup (#t:Type0) (hd : B.box (node t)) (xs : list t)
   requires is_list hd xs
   ensures is_list hd xs ** is_list hd xs
   decreases xs
@@ -80,8 +77,8 @@ ghost fn rec dup_is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
     Cons x rest -> {
       unfold is_list;
       with nd. assert (persistent_pts_to hd nd ** pure (nd.value == x) ** is_list nd.nd_next rest);
-      dup_persistent hd #nd;
-      dup_is_list nd.nd_next rest;
+      dup (persistent_pts_to hd nd) ();
+      is_list_dup nd.nd_next rest;
       fold (is_list hd (x :: rest));
       rewrite (is_list hd (x :: rest)) as (is_list hd xs);
       fold (is_list hd (x :: rest));
@@ -90,49 +87,54 @@ ghost fn rec dup_is_list (#t:Type0) (hd : B.box (node t)) (xs : list t)
   }
 }
 
+instance duplicable_is_list #t hd xs : duplicable (is_list #t hd xs) =
+  { dup_f = fun _ -> is_list_dup hd xs }
+
 (* Stack invariant: uses persistent is_list directly.
    Nodes are immutable after allocation — persistent ownership suffices.
    is_list is duplicable, so we can extract copies outside the invariant. *)
 
-noeq type ts_ghost (t:Type0) = { gr : GR.ref (list t); }
+noeq type stack_ghost (t:Type0) = { gr : GR.ref (list t); }
 
-noeq type tstack2 (t:Type0) = {
+noeq type stack (t:Type0) = {
   head : B.box (B.box (node t));
-  nm   : ts_ghost t;
-  inm  : iname;
+  contents   : stack_ghost t;
+  inv_name  : iname;
 }
 
-let scont2 (#t:Type0) (g:ts_ghost t) (xs:list t) : slprop = GR.pts_to g.gr #0.5R xs
+let stack_content (#t:Type0) (g:stack_ghost t) (xs:list t) : slprop = GR.pts_to g.gr #0.5R xs
 
-let sinv_inner (#t:Type0) (head : B.box (B.box (node t))) (gr : GR.ref (list t)) : slprop =
+let is_stack (#t:Type0) (s:stack t) (xs:list t) : slprop = stack_content s.contents xs
+
+let stack_inv_inner (#t:Type0) (head : B.box (B.box (node t))) (gr : GR.ref (list t)) : slprop =
   exists* (hd : B.box (node t)) (xs : list t).
     B.pts_to head hd ** is_list hd xs ** GR.pts_to gr #0.5R xs
 
-let sinv (#t:Type0) (s:tstack2 t) : slprop = sinv_inner s.head s.nm.gr
-let is_ts2 (#t:Type0) (s:tstack2 t) : slprop = inv s.inm (sinv s)
+let stack_inv (#t:Type0) (s:stack t) : slprop = stack_inv_inner s.head s.contents.gr
+let is_stack_handle (#t:Type0) (s:stack t) : slprop = inv s.inv_name (stack_inv s)
 
 (* ================================================================ *)
 (* new_stack                                                        *)
 (* ================================================================ *)
 
-fn new_stack2 (#t:Type0) ()
+fn new_stack (#t:Type0) ()
   requires emp
-  returns s : tstack2 t
-  ensures is_ts2 s ** scont2 s.nm []
+  returns s : stack t
+  ensures is_stack_handle s ** is_stack s []
 {
   let head = B.alloc (B.null #(node t));
   let gr = GR.alloc #(list t) [];
   GR.share gr;
-  let nm : ts_ghost t = { gr };
-  rewrite (GR.pts_to gr #0.5R []) as (GR.pts_to nm.gr #0.5R []);
-  rewrite (GR.pts_to gr #0.5R []) as (scont2 nm []);
+  let contents : stack_ghost t = { gr };
+  rewrite (GR.pts_to gr #0.5R []) as (GR.pts_to contents.gr #0.5R []);
+  rewrite (GR.pts_to gr #0.5R []) as (stack_content contents []);
   fold (is_list #t (B.null #(node t)) []);
-  fold (sinv_inner head nm.gr);
-  let inm = new_invariant (sinv_inner head nm.gr);
-  let s : tstack2 t = { head; nm; inm };
-  rewrite (inv inm (sinv_inner head nm.gr)) as (inv s.inm (sinv s));
-  fold (is_ts2 s);
-  rewrite (scont2 nm []) as (scont2 s.nm []);
+  fold (stack_inv_inner head contents.gr);
+  let inv_name = new_invariant (stack_inv_inner head contents.gr);
+  let s : stack t = { head; contents; inv_name };
+  rewrite (inv inv_name (stack_inv_inner head contents.gr)) as (inv s.inv_name (stack_inv s));
+  fold (is_stack_handle s);
+  rewrite (stack_content contents []) as (is_stack s []);
   s
 }
 
@@ -141,55 +143,55 @@ fn new_stack2 (#t:Type0) ()
 (* ================================================================ *)
 
 (** read_head: atomic read of head pointer (single atomic_read inside invariant) *)
-fn read_head2 (#t:Type0) (s:tstack2 t)
-  requires is_ts2 s
+fn read_head (#t:Type0) (s:stack t)
+  requires is_stack_handle s
   returns cur : B.box (node t)
-  ensures is_ts2 s
+  ensures is_stack_handle s
 {
-  unfold is_ts2;
-  let cur = with_invariants (B.box (node t)) emp_inames s.inm (sinv s)
+  unfold is_stack_handle;
+  let cur = with_invariants (B.box (node t)) emp_inames s.inv_name (stack_inv s)
     emp (fun _ -> emp)
   fn _ {
-    unfold sinv; unfold sinv_inner;
+    unfold stack_inv; unfold stack_inv_inner;
     let c = atomic_read s.head;
-    fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+    fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
     c
   };
-  fold (is_ts2 s);
+  fold (is_stack_handle s);
   cur
 }
 
-(** try_push2: CAS head from old_hd to new_node.
+(** try_push: CAS head from old_hd to new_node.
     is_list (persistent) stays in the invariant — duplicable.
     The new_node's pts_to is made persistent before linking.
     Faithful to Iris: one atomic CAS per invariant opening. *)
-fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
+fn try_push (#t:Type0) (s:stack t) (v:t) (old_hd new_node : B.box (node t))
     (#xs : erased (list t))
-  requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
+  requires is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs **
            persistent_pts_to new_node ({ value = v; nd_next = old_hd })
   returns b : bool
   ensures AP.cond b
-    (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
-    (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs)
+    (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R (v :: xs))
+    (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs)
 {
-  unfold is_ts2;
-  let b = with_invariants bool emp_inames s.inm (sinv s)
-    (GR.pts_to s.nm.gr #0.5R xs **
+  unfold is_stack_handle;
+  let b = with_invariants bool emp_inames s.inv_name (stack_inv s)
+    (GR.pts_to s.contents.gr #0.5R xs **
      persistent_pts_to new_node ({ value = v; nd_next = old_hd }))
     (fun b -> AP.cond b
-      (GR.pts_to s.nm.gr #0.5R (v :: xs))
-      (GR.pts_to s.nm.gr #0.5R xs))
+      (GR.pts_to s.contents.gr #0.5R (v :: xs))
+      (GR.pts_to s.contents.gr #0.5R xs))
   fn _ {
-    unfold sinv; unfold sinv_inner;
+    unfold stack_inv; unfold stack_inv_inner;
     let b = atomic_cas_box s.head old_hd new_node;
     if b {
       elim_cond_true _ _;
       with hd0 xs0. assert (
         B.pts_to s.head new_node ** pure (reveal (hide hd0) == old_hd) **
-        is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
-        GR.pts_to s.nm.gr #0.5R xs **
+        is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0 **
+        GR.pts_to s.contents.gr #0.5R xs **
         persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
-      GR.pts_to_injective_eq s.nm.gr;
+      GR.pts_to_injective_eq s.contents.gr;
       rewrite each xs0 as (reveal xs);
       rewrite each hd0 as old_hd;
       // Build is_list new_node (v :: xs) from:
@@ -197,38 +199,38 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
       //   is_list old_hd xs (from invariant, persistent)
       fold (is_list new_node (v :: reveal xs));
       // Update ghost
-      GR.gather s.nm.gr;
-      GR.(s.nm.gr := v :: (reveal xs));
-      GR.share s.nm.gr;
-      fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+      GR.gather s.contents.gr;
+      GR.(s.contents.gr := v :: (reveal xs));
+      GR.share s.contents.gr;
+      fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
       fold (AP.cond true
-        (GR.pts_to s.nm.gr #0.5R (v :: xs))
-        (GR.pts_to s.nm.gr #0.5R xs));
+        (GR.pts_to s.contents.gr #0.5R (v :: xs))
+        (GR.pts_to s.contents.gr #0.5R xs));
       true
     } else {
       elim_cond_false _ _;
       // Drop the persistent_pts_to (it's duplicable, safe to drop)
       drop_ (persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
-      fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+      fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
       fold (AP.cond false
-        (GR.pts_to s.nm.gr #0.5R (v :: xs))
-        (GR.pts_to s.nm.gr #0.5R xs));
+        (GR.pts_to s.contents.gr #0.5R (v :: xs))
+        (GR.pts_to s.contents.gr #0.5R xs));
       false
     }
   };
   if b {
     elim_cond_true _ _;
-    fold (is_ts2 s);
+    fold (is_stack_handle s);
     intro_cond_true
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs);
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R (v :: xs))
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs);
     true
   } else {
     elim_cond_false _ _;
-    fold (is_ts2 s);
+    fold (is_stack_handle s);
     intro_cond_false
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (v :: xs))
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs);
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R (v :: xs))
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs);
     false
   }
 }
@@ -236,77 +238,51 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
 (** push_loop: CAS retry loop, parametric in the client's postcondition.
     Allocation happens here (outside the invariant). On CAS failure the
     persistent witness is discarded and the operation retries with a fresh node. *)
-fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
-    (#phi : list t -> unit -> slprop)
+fn rec push_loop (#t:Type0) (s:stack t) (v:t)
+    (phi : unit -> slprop)
     (tok : au_token emp_inames (list t) unit
-      (fun xs -> scont2 s.nm xs)
-      (fun xs _ -> scont2 s.nm (v :: xs))
-      phi)
+      (fun xs -> is_stack s xs)
+      (fun xs _ -> is_stack s (v :: xs))
+      (fun _ r -> phi r))
     (_u:unit)
-  requires is_ts2 s ** au_available tok
-  ensures is_ts2 s ** (exists* xs. phi xs ())
+  requires is_stack_handle s ** au_available tok
+  ensures is_stack_handle s ** phi ()
 {
-  // Step 1: Read head (single atomic read inside invariant)
-  let old_hd = read_head2 s;
-  // Step 2: Allocate new node (OUTSIDE invariant)
+  // Read head (single atomic read inside invariant)
+  let old_hd = read_head s;
+  // Allocate new node (OUTSIDE invariant)
   let new_node = atomic_alloc ({ value = v; nd_next = old_hd } <: node t);
   // Make node persistent (Iris: pointsto_persist)
   make_persistent new_node;
-  // Step 3: Open AU
+  // Open AU
   later_credit_buy 1;
   let xs = au_open tok;
-  unfold scont2;
-  // Step 4: CAS (single atomic CAS inside invariant)
-  let b = try_push2 s v old_hd new_node;
+  unfold is_stack; unfold stack_content;
+  // CAS (single atomic CAS inside invariant)
+  let b = try_push s v old_hd new_node;
   if b {
     elim_cond_true _ _;
-    fold (scont2 s.nm (v :: xs));
+    fold (stack_content s.contents (v :: xs));
+    fold (is_stack s (v :: xs));
     later_credit_buy 1;
     au_commit tok (reveal xs) ();
   } else {
     elim_cond_false _ _;
-    fold (scont2 s.nm xs);
+    fold (stack_content s.contents xs);
+    fold (is_stack s xs);
     later_credit_buy 1;
     au_abort tok (reveal xs);
-    push_loop2 s v tok ()
+    push_loop s v phi tok ()
   }
 }
 
-(** Type witness: push_loop2 IS a lat_void *)
-let push_is_lat (#t:Type0) (s:tstack2 t) (v:t)
-  : lat_void emp_inames (list t)
-    (fun xs -> scont2 s.nm xs)
-    (fun xs _ -> scont2 s.nm (v :: xs))
-    (is_ts2 s)
-  = fun #phi tok _u -> push_loop2 s v #phi tok _u
-
-ghost
-fn mk_id_trade2 (#t:Type0) (s : tstack2 t) (v : t) (#xs : erased (list t))
-  requires emp
-  ensures (forall* (y:unit). (later_credit 1 ** scont2 s.nm (v :: xs)) @==> scont2 s.nm (v :: xs))
-{
-  intro_forall #unit #(fun (y:unit) -> (later_credit 1 ** scont2 s.nm (v :: xs)) @==> scont2 s.nm (v :: xs))
-    emp
-    fn (y:unit) {
-      intro_trade (later_credit 1 ** scont2 s.nm (v :: xs)) (scont2 s.nm (v :: xs)) emp
-        fn _ { drop_ (later_credit 1) }
-    }
-}
-
-(** Sequential wrapper: uses the identity trade (β = Φ).
-    The logically atomic parametricity lives in push_loop2. *)
-fn push2 (#t:Type0) (s:tstack2 t) (v:t)
-  requires is_ts2 s ** scont2 s.nm 'xs
-  ensures is_ts2 s ** (exists* ys. scont2 s.nm ys)
-{
-  mk_id_trade2 s v #'xs;
-  let tok = au_intro #emp_inames #(list t) #unit
-    #(fun xs -> scont2 s.nm xs)
-    #(fun xs _ -> scont2 s.nm (v :: xs))
-    #(fun xs _ -> scont2 s.nm (v :: xs))
-    'xs;
-  push_loop2 s v tok ()
-}
+(** Direct logically atomic triple witness for push. *)
+let push_is_lat (#t:Type0) (s:stack t) (v:t)
+  : lat emp_inames (list t) unit
+    (fun xs -> is_stack s xs)
+    (fun xs _ -> is_stack s (v :: xs))
+    (is_stack_handle s)
+  = push_loop s v
 
 (* ================================================================ *)
 (* pop — read node outside invariant using persistent is_list       *)
@@ -315,8 +291,8 @@ fn push2 (#t:Type0) (s:tstack2 t) (v:t)
 let list_hd_opt (#t:Type0) (xs:list t) : option t = match xs with | [] -> None | v::_ -> Some v
 let list_tl (#t:Type0) (xs:list t) : list t = match xs with | [] -> [] | _::rest -> rest
 
-let pop_post2 (#t:Type0) (g:ts_ghost t) (xs:list t) (ov:option t) : slprop =
-  scont2 g (list_tl xs) ** pure (ov == list_hd_opt xs)
+let pop_post (#t:Type0) (s:stack t) (xs:list t) (ov:option t) : slprop =
+  is_stack s (list_tl xs) ** pure (ov == list_hd_opt xs)
 
 ghost fn is_list_unfold_non_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
   requires is_list hd xs ** pure (not (B.is_null hd))
@@ -375,64 +351,64 @@ fn read_is_list_head (#t:Type0) (hd : B.box (node t)) (#xs : erased (list t))
   nd
 }
 
-fn read_head_for_xs (#t:Type0) (s:tstack2 t) (#xs : erased (list t))
-  requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs
+fn read_head_for_xs (#t:Type0) (s:stack t) (#xs : erased (list t))
+  requires is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs
   returns hd : B.box (node t)
-  ensures is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs ** is_list hd (reveal xs)
+  ensures is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs ** is_list hd (reveal xs)
 {
-  unfold is_ts2;
-  let hd = with_invariants (B.box (node t)) emp_inames s.inm (sinv s)
-    (GR.pts_to s.nm.gr #0.5R xs)
-    (fun hd -> GR.pts_to s.nm.gr #0.5R xs ** is_list hd (reveal xs))
+  unfold is_stack_handle;
+  let hd = with_invariants (B.box (node t)) emp_inames s.inv_name (stack_inv s)
+    (GR.pts_to s.contents.gr #0.5R xs)
+    (fun hd -> GR.pts_to s.contents.gr #0.5R xs ** is_list hd (reveal xs))
   fn _ {
-    unfold sinv; unfold sinv_inner;
-    with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 ** GR.pts_to s.nm.gr #0.5R xs);
-    GR.pts_to_injective_eq s.nm.gr;
+    unfold stack_inv; unfold stack_inv_inner;
+    with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0 ** GR.pts_to s.contents.gr #0.5R xs);
+    GR.pts_to_injective_eq s.contents.gr;
     rewrite each xs0 as (reveal xs);
-    dup_is_list hd0 (reveal xs);
+    dup (is_list hd0 (reveal xs)) ();
     let c = atomic_read s.head;
     rewrite (is_list hd0 (reveal xs)) as (is_list c (reveal xs));
-    fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+    fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
     c
   };
-  fold (is_ts2 s);
+  fold (is_stack_handle s);
   hd
 }
 
-(** try_pop2: CAS head from old_hd to next_hd.
+(** try_pop: CAS head from old_hd to next_hd.
     Faithful to Iris: single atomic CAS inside with_invariants.
     Node contents (v, next_hd) were read OUTSIDE the invariant using
     persistent is_list. The persistent_pts_to witnesses that the node
     contains {value=v, nd_next=next_hd}. *)
-fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
+fn try_pop (#t:Type0) (s:stack t) (old_hd next_hd : B.box (node t))
     (v : t) (#xs : erased (list t))
-  requires is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs **
+  requires is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs **
            persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
            pure (not (B.is_null old_hd))
   returns b : bool
   ensures AP.cond b
-    (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
-    (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs)
+    (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)))
+    (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs)
 {
-  unfold is_ts2;
-  let b = with_invariants bool emp_inames s.inm (sinv s)
-    (GR.pts_to s.nm.gr #0.5R xs **
+  unfold is_stack_handle;
+  let b = with_invariants bool emp_inames s.inv_name (stack_inv s)
+    (GR.pts_to s.contents.gr #0.5R xs **
      persistent_pts_to old_hd ({ value = v; nd_next = next_hd }))
     (fun b -> AP.cond b
-      (GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
-      (GR.pts_to s.nm.gr #0.5R xs))
+      (GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)))
+      (GR.pts_to s.contents.gr #0.5R xs))
   fn _ {
-    unfold sinv; unfold sinv_inner;
+    unfold stack_inv; unfold stack_inv_inner;
     // Single atomic step: CAS head from old_hd to next_hd
     let b = atomic_cas_box s.head old_hd next_hd;
     if b {
       elim_cond_true _ _;
       with hd0 xs0. assert (
         B.pts_to s.head next_hd ** pure (reveal (hide hd0) == old_hd) **
-        is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0 **
-        GR.pts_to s.nm.gr #0.5R xs **
+        is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0 **
+        GR.pts_to s.contents.gr #0.5R xs **
         persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
-      GR.pts_to_injective_eq s.nm.gr;
+      GR.pts_to_injective_eq s.contents.gr;
       rewrite each xs0 as (reveal xs);
       rewrite each hd0 as old_hd;
       // old_hd is non-null, so xs is Cons
@@ -449,60 +425,61 @@ fn try_pop2 (#t:Type0) (s:tstack2 t) (old_hd next_hd : B.box (node t))
       drop_ (B.pts_to old_hd #p2 ({ value = v; nd_next = next_hd }));
       // Now: is_list next_hd (list_tl xs)
       // Update ghost
-      GR.gather s.nm.gr;
-      GR.(s.nm.gr := list_tl (reveal xs));
-      GR.share s.nm.gr;
-      fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+      GR.gather s.contents.gr;
+      GR.(s.contents.gr := list_tl (reveal xs));
+      GR.share s.contents.gr;
+      fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
       fold (AP.cond true
-        (GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
-        (GR.pts_to s.nm.gr #0.5R xs));
+        (GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)))
+        (GR.pts_to s.contents.gr #0.5R xs));
       true
     } else {
       elim_cond_false _ _;
       drop_ (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
-      fold (sinv_inner s.head s.nm.gr); fold (sinv s);
+      fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
       fold (AP.cond false
-        (GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
-        (GR.pts_to s.nm.gr #0.5R xs));
+        (GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)))
+        (GR.pts_to s.contents.gr #0.5R xs));
       false
     }
   };
   if b {
     elim_cond_true _ _;
-    fold (is_ts2 s);
+    fold (is_stack_handle s);
     intro_cond_true
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs);
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)))
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs);
     true
   } else {
     elim_cond_false _ _;
-    fold (is_ts2 s);
+    fold (is_stack_handle s);
     intro_cond_false
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R (list_tl (reveal xs)))
-      (is_ts2 s ** GR.pts_to s.nm.gr #0.5R xs);
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)))
+      (is_stack_handle s ** GR.pts_to s.contents.gr #0.5R xs);
     false
   }
 }
 
-fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
-    (#phi : list t -> option t -> slprop)
+fn rec pop_loop (#t:Type0) (s:stack t)
+    (phi : option t -> slprop)
     (tok : au_token emp_inames (list t) (option t)
-      (fun xs -> scont2 s.nm xs)
-      (fun xs ov -> pop_post2 s.nm xs ov)
-      phi)
+      (fun xs -> is_stack s xs)
+      (fun xs ov -> pop_post s xs ov)
+      (fun _ ov -> phi ov))
     (_u:unit)
-  requires is_ts2 s ** au_available tok
+  requires is_stack_handle s ** au_available tok
   returns ov : option t
-  ensures is_ts2 s ** (exists* xs. phi xs ov)
+  ensures is_stack_handle s ** phi ov
 {
   later_credit_buy 1;
   let xs = au_open tok;
-  unfold scont2;
+  unfold is_stack; unfold stack_content;
   let old_hd = read_head_for_xs s;
   if (B.is_null old_hd) {
     is_list_unfold_null old_hd (reveal xs);
-    fold (scont2 s.nm (list_tl (reveal xs)));
-    fold (pop_post2 s.nm (reveal xs) (None #t));
+    fold (stack_content s.contents (list_tl (reveal xs)));
+    fold (is_stack s (list_tl (reveal xs)));
+    fold (pop_post s (reveal xs) (None #t));
     later_credit_buy 1;
     au_commit tok (reveal xs) (None #t);
     (None #t)
@@ -513,59 +490,31 @@ fn rec pop_loop2 (#t:Type0) (s:tstack2 t)
     drop_ (is_list nd.nd_next (list_tl (reveal xs)));
     rewrite (persistent_pts_to old_hd nd) as
             (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
-    let b = try_pop2 s old_hd next_hd v;
+    let b = try_pop s old_hd next_hd v;
     if b {
       elim_cond_true _ _;
-      fold (scont2 s.nm (list_tl (reveal xs)));
-      fold (pop_post2 s.nm (reveal xs) (Some v));
+      fold (stack_content s.contents (list_tl (reveal xs)));
+      fold (is_stack s (list_tl (reveal xs)));
+      fold (pop_post s (reveal xs) (Some v));
       later_credit_buy 1;
       au_commit tok (reveal xs) (Some v);
       (Some v)
     } else {
       elim_cond_false _ _;
-      fold (scont2 s.nm xs);
+      fold (stack_content s.contents xs);
+      fold (is_stack s xs);
       later_credit_buy 1;
       au_abort tok (reveal xs);
-      pop_loop2 s #phi tok ()
+      pop_loop s phi tok ()
     }
   }
 }
 
-(** Type witness: pop_loop2 IS a lat *)
-let pop_is_lat (#t:Type0) (s:tstack2 t)
+(** Direct logically atomic triple witness for pop. *)
+let pop_is_lat (#t:Type0) (s:stack t)
   : lat emp_inames (list t) (option t)
-    (fun xs -> scont2 s.nm xs)
-    (fun xs ov -> pop_post2 s.nm xs ov)
-    (is_ts2 s)
-  = fun #phi tok _u -> pop_loop2 s #phi tok _u
+    (fun xs -> is_stack s xs)
+    (fun xs ov -> pop_post s xs ov)
+    (is_stack_handle s)
+  = pop_loop s
 
-ghost
-fn mk_id_trade_pop (#t:Type0) (s : tstack2 t) (#xs : erased (list t))
-  requires emp
-  ensures (forall* (ov:option t). (later_credit 1 ** pop_post2 s.nm (reveal xs) ov) @==> pop_post2 s.nm (reveal xs) ov)
-{
-  intro_forall #(option t) #(fun (ov:option t) -> (later_credit 1 ** pop_post2 s.nm (reveal xs) ov) @==> pop_post2 s.nm (reveal xs) ov)
-    emp
-    fn (ov:option t) {
-      intro_trade (later_credit 1 ** pop_post2 s.nm (reveal xs) ov) (pop_post2 s.nm (reveal xs) ov) emp
-        fn _ { drop_ (later_credit 1) }
-    }
-}
-
-(** Sequential pop wrapper *)
-fn pop2 (#t:Type0) (s:tstack2 t)
-  requires is_ts2 s ** scont2 s.nm 'xs
-  returns ov : option t
-  ensures is_ts2 s ** (exists* ys. scont2 s.nm ys)
-{
-  mk_id_trade_pop s #'xs;
-  let tok = au_intro #emp_inames #(list t) #(option t)
-    #(fun xs -> scont2 s.nm xs)
-    #(fun xs ov -> pop_post2 s.nm xs ov)
-    #(fun xs ov -> pop_post2 s.nm xs ov)
-    'xs;
-  let ov = pop_loop2 s tok ();
-  with xs0. assert (pop_post2 s.nm xs0 ov);
-  unfold pop_post2;
-  ov
-}

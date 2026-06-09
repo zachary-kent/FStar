@@ -108,6 +108,3 @@ ghost
 fn pts_to_not_null (#a:_) (#p:_) (r:box a) (#v:a)
   preserves r |-> Frac p v
   ensures  pure (not (is_null #a r))
-
-[@@warn_on_use "box_eq is an assumption (pointer equality)"]
-val box_eq (#a:Type0) (x y : box a) : b:bool{b <==> x == y}
