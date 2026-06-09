@@ -18,7 +18,6 @@ open Pulse.Lib.AtomicPrimitives
 open Pulse.Lib.PersistentPtsTo
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
-module U32 = FStar.UInt32
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
@@ -52,9 +51,7 @@ ghost fn intro_cond_false (p q : slprop)
 (* A node is a (value, next) pair. next is a box pointer; null = empty *)
 noeq type node (t:Type0) = { value : t; nd_next : B.box (node t); }
 
-(* Null sentinel — using B.null *)
-let is_null_node (#t:Type0) (n : B.box (node t)) : bool = B.is_null n
-
+(* Null sentinel — using B.null directly. *)
 (* ================================================================ *)
 (* Persistent is_list: uses persistent_pts_to for node contents     *)
 (* Duplicable — can be used outside the invariant                   *)
@@ -237,7 +234,8 @@ fn try_push2 (#t:Type0) (s:tstack2 t) (v:t) (old_hd new_node : B.box (node t))
 }
 
 (** push_loop: CAS retry loop, parametric in the client's postcondition.
-    Alloc happens HERE (outside invariant). On failure, node is dropped. *)
+    Allocation happens here (outside the invariant). On CAS failure the
+    persistent witness is discarded and the operation retries with a fresh node. *)
 fn rec push_loop2 (#t:Type0) (s:tstack2 t) (v:t)
     (#phi : list t -> unit -> slprop)
     (tok : au_token emp_inames (list t) unit
@@ -316,7 +314,6 @@ fn push2 (#t:Type0) (s:tstack2 t) (v:t)
 
 let list_hd_opt (#t:Type0) (xs:list t) : option t = match xs with | [] -> None | v::_ -> Some v
 let list_tl (#t:Type0) (xs:list t) : list t = match xs with | [] -> [] | _::rest -> rest
-let list_hd_val (#t:Type0) (xs:list t{Cons? xs}) : t = match xs with | v::_ -> v
 
 let pop_post2 (#t:Type0) (g:ts_ghost t) (xs:list t) (ov:option t) : slprop =
   scont2 g (list_tl xs) ** pure (ov == list_hd_opt xs)
@@ -376,28 +373,6 @@ fn read_is_list_head (#t:Type0) (hd : B.box (node t)) (#xs : erased (list t))
   let nd = read_persistent hd;
   rewrite each (reveal _nd_e) as nd;
   nd
-}
-
-(** read_head_snap: read head AND get a persistent is_list snapshot. *)
-fn read_head_snap (#t:Type0) (s:tstack2 t)
-  requires is_ts2 s
-  returns hd : B.box (node t)
-  ensures is_ts2 s ** (exists* xs. is_list hd xs)
-{
-  unfold is_ts2;
-  let hd = with_invariants (B.box (node t)) emp_inames s.inm (sinv s)
-    emp (fun hd -> exists* xs. is_list hd xs)
-  fn _ {
-    unfold sinv; unfold sinv_inner;
-    with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.nm.gr #0.5R xs0);
-    dup_is_list hd0 xs0;
-    let c = atomic_read s.head;
-    rewrite (is_list hd0 xs0) as (is_list c xs0);
-    fold (sinv_inner s.head s.nm.gr); fold (sinv s);
-    c
-  };
-  fold (is_ts2 s);
-  hd
 }
 
 fn read_head_for_xs (#t:Type0) (s:tstack2 t) (#xs : erased (list t))

@@ -1,6 +1,6 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Atomic Counter — CAS-loop increment with LA spec.
-    Also demonstrates lat_open (invariant opening around LA ops). *)
+(** Atomic Counter — CAS-loop increment with a logically atomic specification.
+    The retry loop opens an AU token directly and commits or aborts at the CAS result. *)
 module PulseTutorial.AtomicCounter
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -217,7 +217,7 @@ fn mk_incr_trade (c:counter) (#n : erased U32.t)
 
 (** increment: sequential client-facing wrapper.
     Uses the identity trade (β = Φ); the logically atomic parametricity lives in incr_loop.
-    Iris spec: <<< ∀∀ n, ctr_content γ n >>> incr c @ ↑N <<< ctr_content γ (n+1) | RET #n >>> *)
+    Encoded shape: <<< ∀∀ n, ctr_content γ n >>> increment c @ ↑N <<< ctr_content γ (n+1) | RET () >>>. *)
 fn increment (c:counter)
   requires is_ctr c ** ctr_content c.cg 'n
   ensures is_ctr c ** (exists* m. ctr_content c.cg m)

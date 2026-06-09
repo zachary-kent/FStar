@@ -5,7 +5,7 @@
     (CAS retry loop) with a logically atomic spec. The CAS is the
     linearization point; abort on CAS failure restores the AU for retry.
 
-    This is the canonical LA example: Iris treiber2.v style. *)
+    This is the canonical counter-shaped LA example in this directory. *)
 module PulseTutorial.FAAviaCAS
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -172,20 +172,16 @@ fn try_add (c:counter) (old_n delta : U32.t) (#n : erased U32.t)
 (* FAA via CAS loop — the logically atomic operation                *)
 (* ================================================================ *)
 
-(** The CAS retry loop, universally quantified over Φ.
+(** faa_loop: CAS retry loop with the encoded lat shape.
 
-    Iris spec:
+    Encoded operation:
     <<< ∀∀ n, ctr_val γ n >>>
-      fetch_and_add c delta @ ↑N
-    <<< ∀∀ Φ, ctr_val γ (n + delta) | RET n >>>
+      fetch_and_add c delta @ is
+    <<< ctr_val γ (n + delta) ** pure (old == n) | RET old >>>
 
-    The loop does NOT mention Φ — it provides β at the linearization
-    point and the stored trade (β @==> Φ, supplied by the caller
-    when creating the AU) does the rest. This is the key insight:
-    the CAS loop is parametric in the client's postcondition. *)
-(** faa_loop: THE logically atomic FAA operation.
-    Type: lat — universally quantified over Φ.
-    The CAS loop provides β at the LP; the stored trade does the rest. *)
+    The loop is parametric in the caller's Φ through the AU token. At the
+    successful CAS linearization point it provides β; the token's stored
+    trade (β @==> Φ) supplies the caller-selected postcondition. *)
 fn rec faa_loop (c:counter) (delta:U32.t)
     (#is : inames)
     (#phi : U32.t -> U32.t -> slprop)
@@ -280,11 +276,11 @@ fn fetch_and_add_seq (c:counter) (delta:U32.t)
 (* Client 2: non-trivial Φ — demonstrates universal quantification *)
 (* ================================================================ *)
 
-(** Composed client: Φ ≠ β demonstrates genuine LA.
+(** Composed client: one non-identity Φ instantiation.
     β = ctr_val(n+delta) ** pure(old==n)  (the counter update)
-    Φ = pure(old==n)                      (just the return value fact)
-    The trade drops ctr_val and keeps only the pure receipt.
-    This proves faa_loop works for ANY client-chosen postcondition. *)
+    Φ = pure(old==n)                      (just the return-value fact)
+    The trade drops ctr_val and keeps only the pure receipt, illustrating
+    that faa_loop is not limited to the sequential identity postcondition. *)
 fn composed_faa (c:counter) (delta:U32.t)
   requires is_ctr c ** ctr_val c.cg 'n
   returns old : U32.t
