@@ -26,10 +26,14 @@ val atomic_alloc (#a:Type0) (x : a)
   : stt_atomic (B.box a) #Observable emp_inames
     emp (fun r -> B.pts_to r x)
 
-(* Pointer CAS on boxed locations: HeapLang CAS l expected new. *)
+(* Pointer CAS on boxed locations: HeapLang CAS l expected new.
+
+   Strict CAS semantics: a successful CAS witnesses old == expected, and a
+   failing CAS witnesses old != expected.  No spurious failure on exact match.
+*)
 val atomic_cas_box (#a:Type0) (r : B.box (B.box a))
     (expected new_val : B.box a) (#cur : erased (B.box a))
   : stt_atomic bool #Observable emp_inames
     (B.pts_to r cur)
     (fun b -> P.cond b (B.pts_to r new_val ** pure (reveal cur == expected))
-                       (B.pts_to r cur))
+                       (B.pts_to r cur     ** pure (~ (reveal cur == expected))))

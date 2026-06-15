@@ -49,7 +49,7 @@ val cas (r:ref U32.t) (u v:U32.t) (#i:erased U32.t)
     (pts_to r i)
     (fun b ->
       cond b (pts_to r v ** pure (reveal i == u)) 
-             (pts_to r i))
+             (pts_to r i ** pure (~ (reveal i == u))))
 
 atomic fn read_atomic_box (r:B.box U32.t) (#n:erased U32.t) (#p:perm)
   preserves r |-> Frac p n
@@ -63,7 +63,7 @@ atomic fn write_atomic_box (r:B.box U32.t) (x:U32.t) (#n:erased U32.t)
 atomic fn cas_box (r:B.box U32.t) (u v:U32.t) (#i:erased U32.t)
   requires r |-> i
   returns b: bool
-  ensures cond b ((r |-> v) ** pure (reveal i == u)) (r |-> i)
+  ensures cond b ((r |-> v) ** pure (reveal i == u)) ((r |-> i) ** pure (~ (reveal i == u)))
 
 (** Fetch-and-add on box U32.t: atomically reads, adds delta, writes back.
     Returns the OLD value (before addition). Uses wrapping addition. *)

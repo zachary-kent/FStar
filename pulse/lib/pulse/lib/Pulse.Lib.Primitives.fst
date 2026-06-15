@@ -34,18 +34,18 @@ requires
   returns b:bool
 ensures
   cond b (pts_to r v ** pure (reveal i == u)) 
-         (pts_to r i)
+         (pts_to r i ** pure (~ (reveal i == u)))
 {
   let u' = !r;
   if (u = u')
   {
     r := v;
-    fold (cond true (pts_to r v ** pure (reveal i == u)) (pts_to r i));
+    fold (cond true (pts_to r v ** pure (reveal i == u)) (pts_to r i ** pure (~ (reveal i == u))));
     true
   }
   else
   {
-    fold cond false (pts_to r v ** pure (reveal i == u)) (pts_to r i);
+    fold cond false (pts_to r v ** pure (reveal i == u)) (pts_to r i ** pure (~ (reveal i == u)));
     false
   }
 }
@@ -76,19 +76,19 @@ atomic fn write_atomic_box (r:B.box U32.t) (x:U32.t) (#n:erased U32.t)
 atomic fn cas_box (r:B.box U32.t) (u v:U32.t) (#i:erased U32.t)
   requires r |-> i
   returns b: bool
-  ensures cond b ((r |-> v) ** pure (reveal i == u)) (r |-> i)
+  ensures cond b ((r |-> v) ** pure (reveal i == u)) ((r |-> i) ** pure (~ (reveal i == u)))
 {
   Box.to_ref_pts_to r;
   let b = cas (Box.box_to_ref r) u v;
   if (b) {
     unfold cond;
     Box.to_box_pts_to r;
-    fold cond true ((r |-> v) ** pure (reveal i == u)) (r |-> i);
+    fold cond true ((r |-> v) ** pure (reveal i == u)) ((r |-> i) ** pure (~ (reveal i == u)));
     b
   } else {
     unfold cond;
     Box.to_box_pts_to r;
-    fold cond false ((r |-> v) ** pure (reveal i == u)) (r |-> i);
+    fold cond false ((r |-> v) ** pure (reveal i == u)) ((r |-> i) ** pure (~ (reveal i == u)));
     b
   }
 }
