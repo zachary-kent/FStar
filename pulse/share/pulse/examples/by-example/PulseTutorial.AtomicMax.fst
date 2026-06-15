@@ -126,7 +126,7 @@ fn new_counter ()
 (*                         LP at the CAS.   au_commit at result=v.  *)
 (* ================================================================ *)
 
-fn rec atomic_max (c:counter) (v:U32.t)
+fn atomic_max (c:counter) (v:U32.t)
     (#is : inames)
     (phi : U32.t -> slprop)
     (tok : au_token is U32.t U32.t
@@ -167,10 +167,16 @@ fn rec atomic_max (c:counter) (v:U32.t)
   if U32.lt observed v {
     // n < v branch.  observed = n, so n < v, hence u32_max n v = v.
     // Internal CAS at expected=n new=v — cannot fail (state frozen at n).
+    // Inner cond's failure case carries the strengthened cas_box inequality
+    // witness; combined outside with `pure (observed == reveal n)` (still in
+    // scope from the read step), the SMT derives False and the failure
+    // branch becomes provably unreachable.
     unfold is_ctr;
     let b = with_invariants bool emp_inames c.ci (ctr_inv c)
       (GR.pts_to c.cg.gr #0.5R n)
-      (fun b -> AP.cond b (GR.pts_to c.cg.gr #0.5R v) (GR.pts_to c.cg.gr #0.5R n))
+      (fun b -> AP.cond b
+        (GR.pts_to c.cg.gr #0.5R v)
+        (GR.pts_to c.cg.gr #0.5R n ** pure (~ (reveal n == observed))))
     fn _ {
       unfold ctr_inv; unfold ctr_inv_inner;
       with n0. assert (B.pts_to c.loc n0 **
@@ -180,46 +186,37 @@ fn rec atomic_max (c:counter) (v:U32.t)
       let b = AP.cas_box c.loc observed v;
       if b {
         elim_cond_true _ _;
-        // Box now at v.  Update ghost to v.
         GR.gather c.cg.gr;
         GR.(c.cg.gr := v);
         GR.share c.cg.gr;
         fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
-        fold (AP.cond true (GR.pts_to c.cg.gr #0.5R v) (GR.pts_to c.cg.gr #0.5R n));
+        fold (AP.cond true
+          (GR.pts_to c.cg.gr #0.5R v)
+          (GR.pts_to c.cg.gr #0.5R n ** pure (~ (reveal n == observed))));
         true
       } else {
         elim_cond_false _ _;
+        // Have B.pts_to c.loc (reveal n) ** pure (~(reveal n == observed)).
         fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
-        fold (AP.cond false (GR.pts_to c.cg.gr #0.5R v) (GR.pts_to c.cg.gr #0.5R n));
+        fold (AP.cond false
+          (GR.pts_to c.cg.gr #0.5R v)
+          (GR.pts_to c.cg.gr #0.5R n ** pure (~ (reveal n == observed))));
         false
       }
     };
     fold (is_ctr c);
     if b {
       elim_cond_true _ _;
-      // Have: GR.pts_to c.cg.gr #0.5R v.  LP at the CAS.
-      // u32_max (reveal n) v = v (since reveal n = observed < v).
       fold (ctr_val c.cg v);
       rewrite (ctr_val c.cg v) as (ctr_val c.cg (u32_max (reveal n) v));
       later_credit_buy 1;
       au_commit tok (reveal n) v;
       v
     } else {
-      // CAS failed.  Unreachable: we hold the abstract half, so the box
-      // value is reveal n at every step inside the invariant, and a CAS
-      // at expected = reveal n with state = reveal n cannot return false.
-      // Discharge by absurdity.
+      // pure (~(reveal n == observed)) (from CAS-failure cond) plus
+      // pure (observed == reveal n) (from the read step) gives pure False.
       elim_cond_false _ _;
-      // This is the unreachable branch.  We'll just abort and recurse to
-      // satisfy the type checker — but the recursion is dead code in any
-      // execution.  Simpler: rebuild ctr_val and abort.
-      fold (ctr_val c.cg n);
-      later_credit_buy 1;
-      au_abort tok (reveal n);
-      // Need to produce phi result.  Recurse — the spec is satisfied
-      // because this path is provably never taken at runtime, but Pulse
-      // requires a syntactically-typed branch.
-      atomic_max c v phi tok ()
+      unreachable ()
     }
   } else {
     // n >= v branch.  observed = n, so n >= v, hence u32_max n v = n.
