@@ -11,7 +11,7 @@
     outer FAA LAT uses the same faithful [cas_box] LP shape to update the
     counter from [n] to [n + delta] and return [n], so both examples show
     the bracketed pattern at distinct LAT levels without exposing raw
-    [au_open]/[au_commit]/[au_abort] in user-facing code.
+    AU open/commit/abort primitives in user-facing code.
 
     Adapted from a previously-pruned [PulseTutorial.NestedLP] which had
     used a non-faithful LL/SC kernel.  Here the bottom layer is the
