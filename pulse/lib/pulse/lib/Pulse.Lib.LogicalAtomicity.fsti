@@ -160,6 +160,15 @@ ghost fn au_intro (#is:inames) (#a:Type0) (#b:Type0)
   returns tok : au_token is a b alpha beta phi
   ensures au_available tok
 
+(** Recommended API layering.
+
+    Most clients should use [au_atomic_step] below: it brackets [au_open]
+    around one atomic LP attempt and immediately closes with [au_commit]
+    (success) or [au_abort] (retry/no-LP).  The raw [au_open], [au_commit],
+    and [au_abort] primitives remain public for advanced helping protocols
+    such as RDCSS, where an AU/accessor may be peeked, stored under another
+    invariant, or committed by a helper. *)
+
 (** Open: extract α(x). The commit contract stays in the handle.
     Iris aupd_aacc (line 253): unfolds AU into atomic_acc Eo Ei α AU β Φ.
     Faithfully captured: open extracts α(x), abort restores AU, commit yields Φ. *)
@@ -193,6 +202,27 @@ ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
   opens is
   requires later_credit 1 ** beta (reveal x) y ** au_opened tok (reveal x)
   ensures phi (reveal x) y
+
+(** Bracketed AU step: open the AU, run one atomic LP attempt, then close
+    immediately.  [Some y] commits with [beta x y] and produces [phi x y];
+    [None] aborts and restores [au_available tok].  The three later credits
+    pay for AU open, the client's atomic body (typically an invariant-opened
+    read/CAS), and AU close. *)
+atomic fn au_atomic_step (#is : inames) (#a : Type0) (#b : Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (#r_pre : slprop) (#r_post : b -> slprop)
+    (tok : au_token is a b alpha beta phi)
+    (body : (x : erased a) -> stt_atomic (option b) #Observable emp_inames
+       (r_pre ** later_credit 1 ** alpha (reveal x))
+       (fun result -> match result with
+         | Some y -> r_post y ** beta (reveal x) y
+         | None -> r_pre ** alpha (reveal x)))
+  opens add_inv is (au_iname tok)
+  requires au_available tok ** r_pre ** later_credit 3
+  returns result : option b
+  ensures (match result with
+    | Some y -> exists* (x:a). phi x y ** r_post y
+    | None -> au_available tok ** r_pre)
 
 (** lat_elim: simple AU introduction + execution.
     Iris: directly composing au_intro with an AU-consuming computation.

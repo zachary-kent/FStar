@@ -166,6 +166,41 @@ ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
   drop_ (inv tok.i (au_inv_p is a b alpha beta phi tok.gr))
 }
 
+atomic fn au_atomic_step (#is : inames) (#a : Type0) (#b : Type0)
+    (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
+    (#r_pre : slprop) (#r_post : b -> slprop)
+    (tok : au_token is a b alpha beta phi)
+    (body : (x : erased a) -> stt_atomic (option b) #Observable emp_inames
+       (r_pre ** later_credit 1 ** alpha (reveal x))
+       (fun result -> match result with
+         | Some y -> r_post y ** beta (reveal x) y
+         | None -> r_pre ** alpha (reveal x)))
+  opens add_inv is (au_iname tok)
+  requires au_available tok ** r_pre ** later_credit 3
+  returns result : option b
+  ensures (match result with
+    | Some y -> exists* (x:a). phi x y ** r_post y
+    | None -> au_available tok ** r_pre)
+{
+  later_credit_add 1 2;
+  rewrite (later_credit 3) as (later_credit 1 ** later_credit 2);
+  later_credit_add 1 1;
+  rewrite (later_credit 2) as (later_credit 1 ** later_credit 1);
+  let x = au_open tok;
+  let result = body x;
+  match result {
+    Some y -> {
+      au_commit tok (reveal x) y;
+      fold (exists* (x:a). phi x y ** r_post y);
+      Some y
+    }
+    None -> {
+      au_abort tok (reveal x);
+      None
+    }
+  }
+}
+
 fn lat_elim (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (x0 : erased a)
