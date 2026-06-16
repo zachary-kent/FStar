@@ -8,11 +8,11 @@
     with a fresh AU witness.
 
     The inner LAT exposes a CAS-from-[expected]-to-[new_val] spec.  The
-    outer FAA LAT composes through that inner LAT as a black box: the outer
-    AU is packaged into the inner AU by [au_commit_via_lat], and the shared
-    LP is [cas_loop]'s successful bracketed CAS step.  Thus both examples
-    show bracketed LAT levels without exposing raw AU open/commit/abort
-    primitives in user-facing code.
+    outer FAA LAT composes through that inner LAT as a black box by opening
+    the outer AU with [au_atomic_step], packaging its current α resource
+    into the inner AU, and letting [cas_loop]'s successful bracketed CAS
+    step produce the outer β resource returned to the outer bracket.  Thus
+    both examples use only the bracketed AU combinator in user-facing code.
 
     Adapted from a previously-pruned [PulseTutorial.NestedLP] which had
     used a non-faithful LL/SC kernel.  Here the bottom layer is the
@@ -304,13 +304,13 @@ let cas_is_lat (c:counter) (expected new_val : U32.t) (#is:inames)
 (*     faa_via_cas c delta @ is                                     *)
 (*   <<< ctr_val γ (n + delta) ** pure(old == n) | RET old >>>      *)
 (*                                                                  *)
-(* The body never touches the box directly.  It uses the library     *)
-(* nested-LAT bracket [au_commit_via_lat] to package the outer AU    *)
-(* into the inner CAS AU, then forwards to [cas_loop].               *)
+(* The body never touches the box directly.  It uses outer           *)
+(* [au_atomic_step] to package the current outer α witness into the  *)
+(* inner CAS AU, then forwards to [cas_loop].                        *)
 (*                                                                  *)
 (* When cas_loop hits its bracketed [au_atomic_step] LP (a successful*)
-(* CAS), it commits the inner AU; the captured trade commits the     *)
-(* outer AU. Outer.LP = inner.LP = the physical CAS step.            *)
+(* CAS), it commits the inner AU and returns the outer β resource to *)
+(* the outer bracket. Outer.LP = inner.LP = the physical CAS step.   *)
 (* ================================================================ *)
 
 fn rec faa_via_cas (c:counter) (delta:U32.t)
@@ -328,28 +328,50 @@ fn rec faa_via_cas (c:counter) (delta:U32.t)
   // Cheap read to pick the CAS witness we will offer to the inner LAT.
   let old_n = read_ctr c;
   let new_n = U32.add_mod old_n delta;
-  later_credit_buy 1;
-  let _inner_result = au_commit_via_lat
-    #is #U32.t #U32.t #unit
+  later_credit_buy 3;
+  let attempt = au_atomic_step
+    #is #emp_inames #U32.t #U32.t
     #(fun n -> ctr_val c.cg n)
     #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
     #(fun _ old -> phi old)
-    #(fun n _ -> ctr_val c.cg new_n ** pure (n == old_n))
     #(is_ctr c)
-    #(phi old_n)
+    #(fun _ -> is_ctr c)
     tok
-    old_n
-    fn x _z {
-      // Translate the inner CAS postcondition into the outer FAA postcondition.
-      rewrite (ctr_val c.cg new_n) as (ctr_val c.cg (U32.add_mod (reveal x) delta));
-    }
-    fn _x { () }
-    fn _x inner_tok {
+    fn x {
+      intro_forall #unit
+        #(fun (_:unit) -> trade #is
+          (later_credit 1 ** ctr_val c.cg new_n ** pure (reveal x == old_n))
+          (ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x)))
+        emp
+        fn _ {
+          intro_trade #is
+            (later_credit 1 ** ctr_val c.cg new_n ** pure (reveal x == old_n))
+            (ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x))
+            emp
+            fn _ {
+              drop_ (later_credit 1);
+              // Translate the inner CAS postcondition into the outer FAA beta.
+              rewrite (ctr_val c.cg new_n) as (ctr_val c.cg (U32.add_mod (reveal x) delta));
+            }
+        };
+      let inner_tok = au_intro
+        #is #U32.t #unit
+        #(fun n -> ctr_val c.cg n)
+        #(fun n _ -> ctr_val c.cg new_n ** pure (n == old_n))
+        #(fun _ _ -> ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x))
+        x;
+      drop_ (later_credit 1);
       // LP: [cas_loop]'s successful au_atomic_step CAS commits this inner AU;
-      // the nested trade then commits the outer FAA AU at the same LP.
-      cas_loop c old_n new_n (fun _ -> phi old_n) inner_tok ()
+      // the outer au_atomic_step then commits the FAA AU at the same LP.
+      cas_loop c old_n new_n
+        (fun _ -> ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x))
+        inner_tok ();
+      Some old_n
     };
-  old_n
+  match attempt {
+    Some old -> { old }
+    None -> { faa_via_cas c delta phi tok () }
+  }
 }
 
 (** Outer LAT type witness. *)

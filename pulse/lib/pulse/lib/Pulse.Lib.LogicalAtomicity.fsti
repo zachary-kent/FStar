@@ -203,58 +203,27 @@ ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
   requires later_credit 1 ** beta (reveal x) y ** au_opened tok (reveal x)
   ensures phi (reveal x) y
 
-(** Bracketed AU step: open the AU, run one atomic LP attempt, then close
-    immediately.  [Some y] commits with [beta x y] and produces [phi x y];
-    [None] aborts and restores [au_available tok].  The three later credits
-    pay for AU open, the client's atomic body (typically an invariant-opened
-    read/CAS), and AU close.  [body_inames] are the invariant names the
-    one-step body may open in addition to the AU/trade names. *)
-atomic fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b : Type0)
+(** Bracketed AU step: open the AU, run one LP attempt (or a nested LAT whose
+    own LP returns this bracket's [beta]), then close immediately.  [Some y]
+    commits with [beta x y] and produces [phi x y]; [None] aborts and restores
+    [au_available tok].  The three later credits pay for AU open, the client's
+    body (typically an invariant-opened read/CAS, or a nested LAT call), and AU
+    close.  [body_inames] is retained for source compatibility with the
+    single-atomic-step call sites. *)
+fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b : Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (#r_pre : slprop) (#r_post : b -> slprop)
     (tok : au_token is a b alpha beta phi)
-    (body : (x : erased a) -> stt_atomic (option b) #Observable body_inames
+    (body : (x : erased a) -> stt (option b)
        (r_pre ** later_credit 1 ** alpha (reveal x))
        (fun result -> match result with
          | Some y -> r_post y ** beta (reveal x) y
          | None -> r_pre ** alpha (reveal x)))
-  opens add_inv (join_inames is body_inames) (au_iname tok)
   requires au_available tok ** r_pre ** later_credit 3
   returns result : option b
   ensures (match result with
     | Some y -> exists* (x:a). phi x y ** r_post y
     | None -> au_available tok ** r_pre)
-
-(** Commit an outer AU by running an inner LAT as a black box.
-
-    This is the advanced nested-LAT bracketing form used when an outer LP is
-    exactly the successful commit point of an inner LAT.  The combinator opens
-    the outer AU, packages its α resource and commit continuation into an
-    inner AU token, runs [f] (typically an inner LAT implementation that uses
-    [au_atomic_step] internally), and closes the outer AU from the inner
-    commit trade.  User examples can therefore compose nested LATs without
-    spelling raw [au_open]/[au_commit]/[au_abort] windows themselves. *)
-fn au_commit_via_lat (#is:inames) (#a:Type0) (#b:Type0) (#c:Type0)
-    (#alpha : a -> slprop)
-    (#outer_beta : a -> b -> slprop) (#outer_phi : a -> b -> slprop)
-    (#inner_beta : a -> c -> slprop)
-    (#frame : slprop) (#result : slprop)
-    (tok : au_token is a b alpha outer_beta outer_phi)
-    (outer_y : b)
-    (beta_to_outer : (x:erased a) -> (z:c) ->
-      stt_ghost unit emp_inames
-        (inner_beta (reveal x) z)
-        (fun _ -> outer_beta (reveal x) outer_y))
-    (post_commit : (x:erased a) ->
-      stt_ghost unit emp_inames
-        (outer_phi (reveal x) outer_y)
-        (fun _ -> result))
-    (f : (x:erased a) ->
-      (inner_tok : au_token is a c alpha inner_beta (fun _ z -> result)) ->
-      stt c (frame ** au_available inner_tok) (fun _ -> frame ** result))
-  requires frame ** au_available tok ** later_credit 1
-  returns z : c
-  ensures frame ** result
 
 (** lat_elim: simple AU introduction + execution.
     Iris: directly composing au_intro with an AU-consuming computation.

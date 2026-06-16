@@ -166,16 +166,15 @@ ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
   drop_ (inv tok.i (au_inv_p is a b alpha beta phi tok.gr))
 }
 
-atomic fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b : Type0)
+fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b : Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (#r_pre : slprop) (#r_post : b -> slprop)
     (tok : au_token is a b alpha beta phi)
-    (body : (x : erased a) -> stt_atomic (option b) #Observable body_inames
+    (body : (x : erased a) -> stt (option b)
        (r_pre ** later_credit 1 ** alpha (reveal x))
        (fun result -> match result with
          | Some y -> r_post y ** beta (reveal x) y
          | None -> r_pre ** alpha (reveal x)))
-  opens add_inv (join_inames is body_inames) (au_iname tok)
   requires au_available tok ** r_pre ** later_credit 3
   returns result : option b
   ensures (match result with
@@ -199,52 +198,6 @@ atomic fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b
       None
     }
   }
-}
-
-fn au_commit_via_lat (#is:inames) (#a:Type0) (#b:Type0) (#c:Type0)
-    (#alpha : a -> slprop)
-    (#outer_beta : a -> b -> slprop) (#outer_phi : a -> b -> slprop)
-    (#inner_beta : a -> c -> slprop)
-    (#frame : slprop) (#result : slprop)
-    (tok : au_token is a b alpha outer_beta outer_phi)
-    (outer_y : b)
-    (beta_to_outer : (x:erased a) -> (z:c) ->
-      stt_ghost unit emp_inames
-        (inner_beta (reveal x) z)
-        (fun _ -> outer_beta (reveal x) outer_y))
-    (post_commit : (x:erased a) ->
-      stt_ghost unit emp_inames
-        (outer_phi (reveal x) outer_y)
-        (fun _ -> result))
-    (f : (x:erased a) ->
-      (inner_tok : au_token is a c alpha inner_beta (fun _ z -> result)) ->
-      stt c (frame ** au_available inner_tok) (fun _ -> frame ** result))
-  requires frame ** au_available tok ** later_credit 1
-  returns z : c
-  ensures frame ** result
-{
-  let x = au_open tok;
-  intro_forall #c
-    #(fun (z:c) -> trade #is (later_credit 1 ** inner_beta (reveal x) z) result)
-    (au_opened tok (reveal x))
-    fn z {
-      intro_trade #is
-        (later_credit 1 ** inner_beta (reveal x) z)
-        result
-        (au_opened tok (reveal x))
-        fn _ {
-          beta_to_outer x z;
-          au_commit tok (reveal x) outer_y;
-          post_commit x
-        }
-    };
-  let inner_tok = au_intro
-    #is #a #c
-    #alpha
-    #inner_beta
-    #(fun _ z -> result)
-    (hide (reveal x));
-  f x inner_tok
 }
 
 fn lat_elim (#is:inames) (#a:Type0) (#b:Type0)
