@@ -254,25 +254,79 @@ fn rec push_loop (#t:Type0) (s:stack t) (v:t)
   let new_node = atomic_alloc ({ value = v; nd_next = old_hd } <: node t);
   // Make node persistent (Iris: pointsto_persist)
   make_persistent new_node;
-  // Open AU
-  later_credit_buy 1;
-  let xs = au_open tok;
-  unfold is_stack; unfold stack_content;
-  // CAS (single atomic CAS inside invariant)
-  let b = try_push s v old_hd new_node;
-  if b {
-    elim_cond_true _ _;
-    fold (stack_content s.contents (v :: xs));
-    fold (is_stack s (v :: xs));
-    later_credit_buy 1;
-    au_commit tok (reveal xs) ();
-  } else {
-    elim_cond_false _ _;
-    fold (stack_content s.contents xs);
-    fold (is_stack s xs);
-    later_credit_buy 1;
-    au_abort tok (reveal xs);
-    push_loop s v phi tok ()
+  later_credit_buy 3;
+  let attempt = au_atomic_step
+    #emp_inames #(add_inv emp_inames s.inv_name) #(list t) #unit
+    #(fun xs -> is_stack s xs)
+    #(fun xs _ -> is_stack s (v :: xs))
+    #(fun _ r -> phi r)
+    #(is_stack_handle s ** persistent_pts_to new_node ({ value = v; nd_next = old_hd }))
+    #(fun _ -> is_stack_handle s)
+    tok
+    fn xs {
+      unfold is_stack; unfold stack_content;
+      // LP: successful CAS inside au_atomic_step installs the freshly allocated node.
+      unfold is_stack_handle;
+      let b = with_invariants_a bool emp_inames s.inv_name (stack_inv s)
+        (GR.pts_to s.contents.gr #0.5R xs **
+         persistent_pts_to new_node ({ value = v; nd_next = old_hd }))
+        (fun b -> AP.cond b
+          (GR.pts_to s.contents.gr #0.5R (v :: reveal xs))
+          (GR.pts_to s.contents.gr #0.5R xs))
+      fn _ {
+        unfold stack_inv; unfold stack_inv_inner;
+        let b = atomic_cas_box s.head old_hd new_node;
+        if b {
+          elim_cond_true _ _;
+          with hd0 xs0. assert (
+            B.pts_to s.head new_node ** pure (reveal (hide hd0) == old_hd) **
+            is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0 **
+            GR.pts_to s.contents.gr #0.5R xs **
+            persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
+          GR.pts_to_injective_eq s.contents.gr;
+          rewrite each xs0 as (reveal xs);
+          rewrite each hd0 as old_hd;
+          fold (is_list new_node (v :: reveal xs));
+          GR.gather s.contents.gr;
+          GR.(s.contents.gr := v :: (reveal xs));
+          GR.share s.contents.gr;
+          fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
+          fold (AP.cond true
+            (GR.pts_to s.contents.gr #0.5R (v :: reveal xs))
+            (GR.pts_to s.contents.gr #0.5R xs));
+          true
+        } else {
+          elim_cond_false _ _;
+          fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
+          fold (AP.cond false
+            (GR.pts_to s.contents.gr #0.5R (v :: reveal xs))
+            (GR.pts_to s.contents.gr #0.5R xs));
+          false
+        }
+      };
+      fold (is_stack_handle s);
+      if b {
+        elim_cond_true _ _;
+        fold (stack_content s.contents (v :: reveal xs));
+        fold (is_stack s (v :: reveal xs));
+        Some ()
+      } else {
+        elim_cond_false _ _;
+        fold (stack_content s.contents (reveal xs));
+        fold (is_stack s (reveal xs));
+        None #unit
+      }
+    };
+  match attempt {
+    Some r -> {
+      with _x. assert (phi r ** is_stack_handle s);
+      rewrite each r as ();
+      ()
+    }
+    None -> {
+      drop_ (persistent_pts_to new_node ({ value = v; nd_next = old_hd }));
+      push_loop s v phi tok ()
+    }
   }
 }
 
