@@ -225,6 +225,36 @@ atomic fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b
     | Some y -> exists* (x:a). phi x y ** r_post y
     | None -> au_available tok ** r_pre)
 
+(** Commit an outer AU by running an inner LAT as a black box.
+
+    This advanced nested-LAT helper opens the outer AU, packages its α
+    resource and commit continuation into an inner AU token, runs [f]
+    (typically an inner LAT implementation whose own LP attempts use
+    [au_atomic_step]), and closes the outer AU from the inner commit trade.
+    User examples can therefore compose nested LATs without spelling raw
+    [au_open]/[au_commit]/[au_abort] windows themselves. *)
+fn au_commit_via_lat (#is:inames) (#a:Type0) (#b:Type0) (#c:Type0)
+    (#alpha : a -> slprop)
+    (#outer_beta : a -> b -> slprop) (#outer_phi : a -> b -> slprop)
+    (#inner_beta : a -> c -> slprop)
+    (#frame : slprop) (#result : slprop)
+    (tok : au_token is a b alpha outer_beta outer_phi)
+    (outer_y : b)
+    (beta_to_outer : (x:erased a) -> (z:c) ->
+      stt_ghost unit emp_inames
+        (inner_beta (reveal x) z)
+        (fun _ -> outer_beta (reveal x) outer_y))
+    (post_commit : (x:erased a) ->
+      stt_ghost unit emp_inames
+        (outer_phi (reveal x) outer_y)
+        (fun _ -> result))
+    (f : (x:erased a) ->
+      (inner_tok : au_token is a c alpha inner_beta (fun _ z -> result)) ->
+      stt c (frame ** au_available inner_tok) (fun _ -> frame ** result))
+  requires frame ** au_available tok ** later_credit 1
+  returns z : c
+  ensures frame ** result
+
 (** lat_elim: simple AU introduction + execution.
     Iris: directly composing au_intro with an AU-consuming computation.
     Faithfully captured. *)
