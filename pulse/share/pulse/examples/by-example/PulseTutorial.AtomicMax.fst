@@ -24,13 +24,10 @@
     (modulo the abstract conditional).  Same outer LAT, two LP loci,
     two genuinely-different physical inner primitives.
 
-    Why this works without a retry loop.  Once we au_open the outer
-    AU, we hold ctr_val c.cg n (one ghost half).  The other half lives
-    in c.ci's invariant.  No other thread can modify the counter while
-    we hold our half, because mutating the counter requires updating
-    the invariant's ghost half too, and that requires gathering with
-    our half.  So inside the AU window the counter is FROZEN — the
-    internal read sees n, and a CAS at expected=n cannot fail.
+    Earlier versions opened the outer AU across both a read and a CAS,
+    which froze the counter and ruled out CAS failure.  The current
+    version uses au_atomic_step for one LP attempt at a time; CAS failure is
+    live again and retries recursively with a fresh abstract witness.
 
     Alongside [PulseTutorial.NestedAU] (FAA via inner CAS LAT, single
     LP at one primitive type) and [PulseTutorial.NestedLP] (LL/SC,
@@ -107,6 +104,24 @@ fn new_counter ()
   c
 }
 
+fn read_ctr (c:counter)
+  requires is_ctr c
+  returns observed : U32.t
+  ensures is_ctr c
+{
+  unfold is_ctr;
+  let observed = with_invariants U32.t emp_inames c.ci (ctr_inv c)
+    emp (fun _ -> emp)
+  fn _ {
+    unfold ctr_inv; unfold ctr_inv_inner;
+    let observed = AP.read_atomic_box c.loc;
+    fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+    observed
+  };
+  fold (is_ctr c);
+  observed
+}
+
 (* ================================================================ *)
 (* atomic_max c v — multi-LP outer LAT                              *)
 (*                                                                  *)
@@ -116,17 +131,16 @@ fn new_counter ()
 (*       | RET result : U32.t >>>                                   *)
 (*                                                                  *)
 (* Implementation:                                                  *)
-(*   1. au_open — get erased witness n + ctr_val c.cg n.            *)
-(*   2. Internal atomic_read inside c.ci → observed; prove          *)
-(*      observed == reveal n via GR.pts_to_injective_eq.            *)
-(*   3. Branch on observed vs v:                                    *)
-(*      - observed >= v:   LP at the read.   au_commit at result=n. *)
-(*      - observed <  v:   internal cas_box at expected=n new=v;    *)
-(*                         CAS cannot fail (state frozen);          *)
-(*                         LP at the CAS.   au_commit at result=v.  *)
+(*   Each loop iteration first performs an ordinary read to choose   *)
+(*   an LP attempt.  The AU is opened only by au_atomic_step, whose  *)
+(*   body performs exactly one physical atomic LP attempt and then   *)
+(*   immediately commits (Some) or aborts (None).                   *)
+(*      - guess >= v: LP at read inside au_atomic_step.             *)
+(*      - guess <  v: LP at successful CAS inside au_atomic_step;   *)
+(*                    failed CAS aborts and retries recursively.    *)
 (* ================================================================ *)
 
-fn atomic_max (c:counter) (v:U32.t)
+fn rec atomic_max (c:counter) (v:U32.t)
     (#is : inames)
     (phi : U32.t -> slprop)
     (tok : au_token is U32.t U32.t
@@ -138,94 +152,98 @@ fn atomic_max (c:counter) (v:U32.t)
   returns result : U32.t
   ensures is_ctr c ** phi result
 {
-  // Step 1: open outer AU.  Get erased witness n + ctr_val c.cg n + au_opened.
-  later_credit_buy 1;
-  let n = au_open tok;
-  unfold ctr_val;
-  // We now hold: GR.pts_to c.cg.gr #0.5R n, au_opened tok (reveal n).
-
-  // Step 2: internal atomic_read inside the invariant.  Prove observed = n.
-  unfold is_ctr;
-  let observed = with_invariants U32.t emp_inames c.ci (ctr_inv c)
-    (GR.pts_to c.cg.gr #0.5R n)
-    (fun observed -> GR.pts_to c.cg.gr #0.5R n ** pure (observed == reveal n))
-  fn _ {
-    unfold ctr_inv; unfold ctr_inv_inner;
-    with n0. assert (B.pts_to c.loc n0 **
-      GR.pts_to c.cg.gr #0.5R n0 ** GR.pts_to c.cg.gr #0.5R n);
-    GR.pts_to_injective_eq c.cg.gr;
-    rewrite each n0 as (reveal n);
-    let observed = AP.read_atomic_box c.loc;
-    // From read_atomic_box's spec: pure (reveal n == observed).
-    fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
-    observed
-  };
-  fold (is_ctr c);
-  // Have: GR.pts_to c.cg.gr #0.5R n, observed:U32.t, pure (observed == reveal n).
-
-  // Step 3: branch on observed vs v.
-  if U32.lt observed v {
-    // n < v branch.  observed = n, so n < v, hence u32_max n v = v.
-    // Internal CAS at expected=n new=v — cannot fail (state frozen at n).
-    // Inner cond's failure case carries the strengthened cas_box inequality
-    // witness; combined outside with `pure (observed == reveal n)` (still in
-    // scope from the read step), the SMT derives False and the failure
-    // branch becomes provably unreachable.
-    unfold is_ctr;
-    let b = with_invariants bool emp_inames c.ci (ctr_inv c)
-      (GR.pts_to c.cg.gr #0.5R n)
-      (fun b -> AP.cond b
-        (GR.pts_to c.cg.gr #0.5R v)
-        (GR.pts_to c.cg.gr #0.5R n ** pure (~ (reveal n == observed))))
-    fn _ {
-      unfold ctr_inv; unfold ctr_inv_inner;
-      with n0. assert (B.pts_to c.loc n0 **
-        GR.pts_to c.cg.gr #0.5R n0 ** GR.pts_to c.cg.gr #0.5R n);
-      GR.pts_to_injective_eq c.cg.gr;
-      rewrite each n0 as (reveal n);
-      let b = AP.cas_box c.loc observed v;
-      if b {
-        elim_cond_true _ _;
-        GR.gather c.cg.gr;
-        GR.(c.cg.gr := v);
-        GR.share c.cg.gr;
-        fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
-        fold (AP.cond true
-          (GR.pts_to c.cg.gr #0.5R v)
-          (GR.pts_to c.cg.gr #0.5R n ** pure (~ (reveal n == observed))));
-        true
+  let guess = read_ctr c;
+  later_credit_buy 3;
+  let attempt = au_atomic_step
+    #is #(add_inv emp_inames c.ci) #U32.t #U32.t
+    #(fun n -> ctr_val c.cg n)
+    #(fun n result -> ctr_val c.cg (u32_max n v) ** pure (result == u32_max n v))
+    #(fun _ result -> phi result)
+    #(is_ctr c)
+    #(fun _ -> is_ctr c)
+    tok
+    fn n {
+      unfold ctr_val;
+      if U32.lt guess v {
+        // LP: successful CAS inside au_atomic_step when the guessed value is below v.
+        unfold is_ctr;
+        let b = with_invariants_a bool emp_inames c.ci (ctr_inv c)
+          (GR.pts_to c.cg.gr #0.5R n)
+          (fun b -> AP.cond b
+            (GR.pts_to c.cg.gr #0.5R v ** pure (reveal n == guess))
+            (GR.pts_to c.cg.gr #0.5R n))
+        fn _ {
+          unfold ctr_inv; unfold ctr_inv_inner;
+          with n0. assert (B.pts_to c.loc n0 **
+            GR.pts_to c.cg.gr #0.5R n0 ** GR.pts_to c.cg.gr #0.5R n);
+          GR.pts_to_injective_eq c.cg.gr;
+          rewrite each n0 as (reveal n);
+          let b = AP.cas_box c.loc guess v;
+          if b {
+            elim_cond_true _ _;
+            GR.gather c.cg.gr;
+            GR.(c.cg.gr := v);
+            GR.share c.cg.gr;
+            fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+            fold (AP.cond true
+              (GR.pts_to c.cg.gr #0.5R v ** pure (reveal n == guess))
+              (GR.pts_to c.cg.gr #0.5R n));
+            true
+          } else {
+            elim_cond_false _ _;
+            fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+            fold (AP.cond false
+              (GR.pts_to c.cg.gr #0.5R v ** pure (reveal n == guess))
+              (GR.pts_to c.cg.gr #0.5R n));
+            false
+          }
+        };
+        fold (is_ctr c);
+        if b {
+          elim_cond_true _ _;
+          fold (ctr_val c.cg v);
+          rewrite (ctr_val c.cg v) as (ctr_val c.cg (u32_max (reveal n) v));
+          Some v
+        } else {
+          elim_cond_false _ _;
+          fold (ctr_val c.cg n);
+          None #U32.t
+        }
       } else {
-        elim_cond_false _ _;
-        // Have B.pts_to c.loc (reveal n) ** pure (~(reveal n == observed)).
-        fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
-        fold (AP.cond false
-          (GR.pts_to c.cg.gr #0.5R v)
-          (GR.pts_to c.cg.gr #0.5R n ** pure (~ (reveal n == observed))));
-        false
+        // LP: read inside au_atomic_step when the guessed value is at least v.
+        unfold is_ctr;
+        let observed = with_invariants_a U32.t emp_inames c.ci (ctr_inv c)
+          (GR.pts_to c.cg.gr #0.5R n)
+          (fun observed -> GR.pts_to c.cg.gr #0.5R n ** pure (observed == reveal n))
+        fn _ {
+          unfold ctr_inv; unfold ctr_inv_inner;
+          with n0. assert (B.pts_to c.loc n0 **
+            GR.pts_to c.cg.gr #0.5R n0 ** GR.pts_to c.cg.gr #0.5R n);
+          GR.pts_to_injective_eq c.cg.gr;
+          rewrite each n0 as (reveal n);
+          let observed = AP.read_atomic_box c.loc;
+          fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+          observed
+        };
+        fold (is_ctr c);
+        if U32.lt observed v {
+          fold (ctr_val c.cg n);
+          None #U32.t
+        } else {
+          fold (ctr_val c.cg n);
+          rewrite (ctr_val c.cg n) as (ctr_val c.cg (u32_max (reveal n) v));
+          Some observed
+        }
       }
     };
-    fold (is_ctr c);
-    if b {
-      elim_cond_true _ _;
-      fold (ctr_val c.cg v);
-      rewrite (ctr_val c.cg v) as (ctr_val c.cg (u32_max (reveal n) v));
-      later_credit_buy 1;
-      au_commit tok (reveal n) v;
-      v
-    } else {
-      // pure (~(reveal n == observed)) (from CAS-failure cond) plus
-      // pure (observed == reveal n) (from the read step) gives pure False.
-      elim_cond_false _ _;
-      unreachable ()
+  match attempt {
+    Some result -> {
+      with _x. assert (phi result ** is_ctr c);
+      result
     }
-  } else {
-    // n >= v branch.  observed = n, so n >= v, hence u32_max n v = n.
-    // LP at the internal atomic_read above.
-    fold (ctr_val c.cg n);
-    rewrite (ctr_val c.cg n) as (ctr_val c.cg (u32_max (reveal n) v));
-    later_credit_buy 1;
-    au_commit tok (reveal n) observed;
-    observed
+    None -> {
+      atomic_max c v phi tok ()
+    }
   }
 }
 

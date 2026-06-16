@@ -207,17 +207,18 @@ ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
     immediately.  [Some y] commits with [beta x y] and produces [phi x y];
     [None] aborts and restores [au_available tok].  The three later credits
     pay for AU open, the client's atomic body (typically an invariant-opened
-    read/CAS), and AU close. *)
-atomic fn au_atomic_step (#is : inames) (#a : Type0) (#b : Type0)
+    read/CAS), and AU close.  [body_inames] are the invariant names the
+    one-step body may open in addition to the AU/trade names. *)
+atomic fn au_atomic_step (#is : inames) (#body_inames : inames) (#a : Type0) (#b : Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)
     (#r_pre : slprop) (#r_post : b -> slprop)
     (tok : au_token is a b alpha beta phi)
-    (body : (x : erased a) -> stt_atomic (option b) #Observable emp_inames
+    (body : (x : erased a) -> stt_atomic (option b) #Observable body_inames
        (r_pre ** later_credit 1 ** alpha (reveal x))
        (fun result -> match result with
          | Some y -> r_post y ** beta (reveal x) y
          | None -> r_pre ** alpha (reveal x)))
-  opens add_inv is (au_iname tok)
+  opens add_inv (join_inames is body_inames) (au_iname tok)
   requires au_available tok ** r_pre ** later_credit 3
   returns result : option b
   ensures (match result with
