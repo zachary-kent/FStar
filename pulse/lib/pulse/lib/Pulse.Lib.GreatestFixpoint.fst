@@ -10,22 +10,31 @@ module Pulse.Lib.GreatestFixpoint
 open Pulse.Lib.Pervasives
 open Pulse.Lib.Trade
 
+
+
+(** Local helper for invoking stt_ghost-valued function fields
+    (private in Pulse.Lib.Trade). *)
 let call #t #is #req #ens (h: unit -> stt_ghost is t req (fun x -> ens x)) = h
 
+let post_fp_obligation (f : slprop -> slprop) (p : slprop) : slprop =
+  pure (implies p (f p))
+
 let bi_gfp (f : slprop -> slprop) : slprop =
-  exists* (p : slprop). equiv p (p ** f p) ** p
+  exists* (p : slprop). post_fp_obligation f p ** p
 
 ghost fn bi_gfp_intro (f : slprop -> slprop) (p : slprop)
-  requires equiv p (p ** f p) ** p
+  requires pure (implies p (f p)) ** p
   ensures bi_gfp f
 {
+  fold (post_fp_obligation f p);
+  fold (exists* (q : slprop). post_fp_obligation f q ** q);
   fold (bi_gfp f)
 }
 
 (** Closure used as f_elim for intro_trade in bi_gfp_unfold:
-    given [equiv p (p ** f p) ** p], produce [bi_gfp f]. *)
+    given [pure (implies phi (f phi)) ** phi], produce [bi_gfp f]. *)
 ghost fn cvt_phi_to_gfp (f : slprop -> slprop) (phi : slprop) (_ : unit)
-  requires equiv phi (phi ** f phi) ** phi
+  requires pure (implies phi (f phi)) ** phi
   ensures bi_gfp f
 {
   bi_gfp_intro f phi
@@ -36,15 +45,23 @@ ghost fn bi_gfp_unfold (f : slprop -> slprop) {| mono : mono_slprop f |}
   ensures f (bi_gfp f)
 {
   unfold (bi_gfp f);
-  with phi. assert (equiv phi (phi ** f phi) ** phi);
-  equiv_dup phi (phi ** f phi);
-  equiv_elim phi (phi ** f phi);
-  equiv_dup phi (phi ** f phi);
-  intro_trade #emp_inames phi (bi_gfp f) (equiv phi (phi ** f phi)) (cvt_phi_to_gfp f phi);
-  // Apply mono to convert f phi into f (bi_gfp f).
-  call (mono.mono_lemma phi (bi_gfp f)) ();
-  drop_ (equiv phi (phi ** f phi));
-  drop_ phi
+  with phi. assert (post_fp_obligation f phi ** phi);
+  unfold (post_fp_obligation f phi);
+  // Extract the meta-fact (consumes the pure slprop, produces emp + squash).
+  let pf : squash (implies phi (f phi)) = elim_pure_explicit (implies phi (f phi));
+  // Re-introduce two copies using the saved squash.
+  intro_pure (implies phi (f phi)) pf;
+  intro_pure (implies phi (f phi)) pf;
+  // Have: pure_a ** pure_b ** phi
+  // Build trade phi (bi_gfp f); intro_trade consumes pure_a as extra.
+  intro_trade #emp_inames phi (bi_gfp f) (pure (implies phi (f phi))) (cvt_phi_to_gfp f phi);
+  // Have: pure_b ** phi ** trade phi (bi_gfp f)
+  // Use pure_b's meta-fact to invoke implies_elim, consuming phi.
+  drop_ (pure (implies phi (f phi)));
+  implies_elim phi (f phi);
+  // Have: f phi ** trade phi (bi_gfp f)
+  // Apply mono to lift f phi to f (bi_gfp f), consuming the trade.
+  call (mono.mono_lemma phi (bi_gfp f)) ()
 }
 
 (** Identity functor + instance + demo. *)

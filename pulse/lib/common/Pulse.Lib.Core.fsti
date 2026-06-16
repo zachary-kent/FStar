@@ -524,6 +524,22 @@ val later_elim (p: slprop) : stt_ghost unit emp_inames (later p ** later_credit 
 
 val later_elim_timeless (p: slprop { timeless p }) : stt_ghost unit emp_inames (later p) (fun _ -> p)
 
+//////////////////////////////////////////////////////////////////////////
+// Meta-level entailment (re-exported from PulseCore.InstantiatedSemantics)
+//////////////////////////////////////////////////////////////////////////
+
+(** Meta-level (propositional) entailment between slprops. Persistent
+    by virtue of being a [prop]; can be wrapped in [pure] to carry
+    across slprop manipulations. *)
+val implies (p q : slprop) : prop
+
+(** Eliminate a meta-entailment: from [p] and a proof that [implies p q]
+    holds, derive [q] by consuming [p]. This is the Pulse analog of the
+    Iris persistent linear wand application: the meta-fact is reusable
+    (live as a [squash] in F* scope), but each application consumes [p]. *)
+val implies_elim (p : slprop) (q : slprop { implies p q })
+  : stt_ghost unit emp_inames p (fun _ -> q)
+
 val later_star p q : squash (later (p ** q) == later p ** later q)
 val later_exists (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (later (exists* x. f x)) (fun _ -> exists* x. later (f x))
 val exists_later (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (exists* x. later (f x)) (fun _ -> later (exists* x. f x))

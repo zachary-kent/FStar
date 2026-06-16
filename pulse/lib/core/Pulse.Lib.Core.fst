@@ -227,6 +227,9 @@ let later_elim p = A.later_elim p
 
 let later_elim_timeless p = A.implies_elim (later p) p
 
+let implies = implies
+let implies_elim p q = A.implies_elim p q
+
 let later_star = Sep.later_star
 let later_exists #t f =
   let h: squash Sep.(later (exists* x. f x) `implies` exists* x. later (f x)) = Sep.later_exists #t f in
