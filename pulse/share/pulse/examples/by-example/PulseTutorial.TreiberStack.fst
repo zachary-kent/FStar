@@ -102,6 +102,11 @@ noeq type stack (t:Type0) = {
   inv_name  : iname;
 }
 
+noeq type stack_snapshot (t:Type0) = {
+  snap_hd : B.box (node t);
+  snap_xs : erased (list t);
+}
+
 let stack_content (#t:Type0) (g:stack_ghost t) (xs:list t) : slprop = GR.pts_to g.gr #0.5R xs
 
 let is_stack (#t:Type0) (s:stack t) (xs:list t) : slprop = stack_content s.contents xs
@@ -345,6 +350,13 @@ let push_is_lat (#t:Type0) (s:stack t) (v:t)
 let list_hd_opt (#t:Type0) (xs:list t) : option t = match xs with | [] -> None | v::_ -> Some v
 let list_tl (#t:Type0) (xs:list t) : list t = match xs with | [] -> [] | _::rest -> rest
 
+let lemma_list_hd_opt_cons (#t:Type0) (xs:list t)
+  : Lemma (requires Cons? xs)
+          (ensures list_hd_opt xs == Some (List.Tot.hd xs))
+= match xs with
+  | [] -> ()
+  | _ :: _ -> ()
+
 let pop_post (#t:Type0) (s:stack t) (xs:list t) (ov:option t) : slprop =
   is_stack s (list_tl xs) ** pure (ov == list_hd_opt xs)
 
@@ -388,6 +400,26 @@ ghost fn is_list_unfold_null (#t:Type0) (hd : B.box (node t)) (xs : list t)
   }
 }
 
+ghost fn pop_node_agrees (#t:Type0) (old_hd next_hd : B.box (node t)) (v : t) (xs : list t)
+  requires is_list old_hd xs **
+           persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+           pure (not (B.is_null old_hd))
+  ensures is_list next_hd (list_tl xs) ** pure (Some v == list_hd_opt xs)
+{
+  let nd_e = is_list_unfold_non_null old_hd xs;
+  unfold (persistent_pts_to old_hd (reveal nd_e));
+  with p1. assert (B.pts_to old_hd #p1 (reveal nd_e));
+  unfold (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+  with p2. assert (B.pts_to old_hd #p2 ({ value = v; nd_next = next_hd }));
+  B.pts_to_injective_eq old_hd;
+  rewrite each (reveal nd_e) as ({ value = v; nd_next = next_hd } <: node t);
+  drop_ (B.pts_to old_hd #p1 ({ value = v; nd_next = next_hd }));
+  drop_ (B.pts_to old_hd #p2 ({ value = v; nd_next = next_hd }));
+  assert (pure (v == List.Tot.hd xs));
+  lemma_list_hd_opt_cons xs;
+  assert (pure (Some v == list_hd_opt xs))
+}
+
 
 (** read_is_list_head: read node contents from persistent is_list.
     Wraps ghost unfold + physical read in a single fn boundary,
@@ -427,6 +459,29 @@ fn read_head_for_xs (#t:Type0) (s:stack t) (#xs : erased (list t))
   };
   fold (is_stack_handle s);
   hd
+}
+
+fn read_head_snapshot (#t:Type0) (s:stack t)
+  requires is_stack_handle s
+  returns snap : stack_snapshot t
+  ensures is_stack_handle s ** is_list snap.snap_hd (reveal snap.snap_xs)
+{
+  unfold is_stack_handle;
+  let snap = with_invariants (stack_snapshot t) emp_inames s.inv_name (stack_inv s)
+    emp
+    (fun snap -> is_list snap.snap_hd (reveal snap.snap_xs))
+  fn _ {
+    unfold stack_inv; unfold stack_inv_inner;
+    with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0);
+    dup (is_list hd0 xs0) ();
+    let c = atomic_read s.head;
+    let snap = { snap_hd = c; snap_xs = hide xs0 };
+    rewrite (is_list hd0 xs0) as (is_list snap.snap_hd (reveal snap.snap_xs));
+    fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
+    snap
+  };
+  fold (is_stack_handle s);
+  snap
 }
 
 (** try_pop: CAS head from old_hd to next_hd.
@@ -525,41 +580,155 @@ fn rec pop_loop (#t:Type0) (s:stack t)
   returns ov : option t
   ensures is_stack_handle s ** phi ov
 {
-  later_credit_buy 1;
-  let xs = au_open tok;
-  unfold is_stack; unfold stack_content;
-  let old_hd = read_head_for_xs s;
+  let snap = read_head_snapshot s;
+  let old_hd = snap.snap_hd;
+  let snap_xs = snap.snap_xs;
+  rewrite (is_list snap.snap_hd (reveal snap.snap_xs)) as (is_list old_hd (reveal snap_xs));
   if (B.is_null old_hd) {
-    is_list_unfold_null old_hd (reveal xs);
-    fold (stack_content s.contents (list_tl (reveal xs)));
-    fold (is_stack s (list_tl (reveal xs)));
-    fold (pop_post s (reveal xs) (None #t));
-    later_credit_buy 1;
-    au_commit tok (reveal xs) (None #t);
-    (None #t)
+    drop_ (is_list old_hd (reveal snap_xs));
+    later_credit_buy 3;
+    let attempt = au_atomic_step
+      #emp_inames #(add_inv emp_inames s.inv_name) #(list t) #(option t)
+      #(fun xs -> is_stack s xs)
+      #(fun xs ov -> pop_post s xs ov)
+      #(fun _ ov -> phi ov)
+      #(is_stack_handle s)
+      #(fun _ -> is_stack_handle s)
+      tok
+      fn xs {
+        unfold is_stack; unfold stack_content;
+        // LP: empty-pop read inside au_atomic_step observes a null head.
+        unfold is_stack_handle;
+        let observed = with_invariants_a (B.box (node t)) emp_inames s.inv_name (stack_inv s)
+          (GR.pts_to s.contents.gr #0.5R xs)
+          (fun hd -> GR.pts_to s.contents.gr #0.5R xs ** is_list hd (reveal xs))
+        fn _ {
+          unfold stack_inv; unfold stack_inv_inner;
+          with hd0 xs0. assert (B.pts_to s.head hd0 ** is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0 ** GR.pts_to s.contents.gr #0.5R xs);
+          GR.pts_to_injective_eq s.contents.gr;
+          rewrite each xs0 as (reveal xs);
+          dup (is_list hd0 (reveal xs)) ();
+          let c = atomic_read s.head;
+          rewrite (is_list hd0 (reveal xs)) as (is_list c (reveal xs));
+          fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
+          c
+        };
+        fold (is_stack_handle s);
+        if (B.is_null observed) {
+          is_list_unfold_null observed (reveal xs);
+          fold (stack_content s.contents (list_tl (reveal xs)));
+          fold (is_stack s (list_tl (reveal xs)));
+          fold (pop_post s (reveal xs) (None #t));
+          Some (None #t)
+        } else {
+          drop_ (is_list observed (reveal xs));
+          fold (stack_content s.contents (reveal xs));
+          fold (is_stack s (reveal xs));
+          None #(option t)
+        }
+      };
+    match attempt {
+      Some ov -> {
+        with _x. assert (phi ov ** is_stack_handle s);
+        ov
+      }
+      None -> { pop_loop s phi tok () }
+    }
   } else {
     let nd = read_is_list_head old_hd;
     let v = nd.value;
     let next_hd = nd.nd_next;
-    drop_ (is_list nd.nd_next (list_tl (reveal xs)));
+    drop_ (is_list nd.nd_next (list_tl (reveal snap_xs)));
     rewrite (persistent_pts_to old_hd nd) as
             (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
-    let b = try_pop s old_hd next_hd v;
-    if b {
-      elim_cond_true _ _;
-      fold (stack_content s.contents (list_tl (reveal xs)));
-      fold (is_stack s (list_tl (reveal xs)));
-      fold (pop_post s (reveal xs) (Some v));
-      later_credit_buy 1;
-      au_commit tok (reveal xs) (Some v);
-      (Some v)
-    } else {
-      elim_cond_false _ _;
-      fold (stack_content s.contents xs);
-      fold (is_stack s xs);
-      later_credit_buy 1;
-      au_abort tok (reveal xs);
-      pop_loop s phi tok ()
+    later_credit_buy 3;
+    let attempt = au_atomic_step
+      #emp_inames #(add_inv emp_inames s.inv_name) #(list t) #(option t)
+      #(fun xs -> is_stack s xs)
+      #(fun xs ov -> pop_post s xs ov)
+      #(fun _ ov -> phi ov)
+      #(is_stack_handle s ** persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) ** pure (not (B.is_null old_hd)))
+      #(fun _ -> is_stack_handle s)
+      tok
+      fn xs {
+        unfold is_stack; unfold stack_content;
+        // LP: successful CAS inside au_atomic_step removes the observed head node.
+        unfold is_stack_handle;
+        let b = with_invariants_a bool emp_inames s.inv_name (stack_inv s)
+          (GR.pts_to s.contents.gr #0.5R xs **
+           persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+           pure (not (B.is_null old_hd)))
+          (fun b -> AP.cond b
+            (GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)) **
+             pure (Some v == list_hd_opt (reveal xs)))
+            (GR.pts_to s.contents.gr #0.5R xs **
+             persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+             pure (not (B.is_null old_hd))))
+        fn _ {
+          unfold stack_inv; unfold stack_inv_inner;
+          let b = atomic_cas_box s.head old_hd next_hd;
+          if b {
+            elim_cond_true _ _;
+            with hd0 xs0. assert (
+              B.pts_to s.head next_hd ** pure (reveal (hide hd0) == old_hd) **
+              is_list hd0 xs0 ** GR.pts_to s.contents.gr #0.5R xs0 **
+              GR.pts_to s.contents.gr #0.5R xs **
+              persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+              pure (not (B.is_null old_hd)));
+            GR.pts_to_injective_eq s.contents.gr;
+            rewrite each xs0 as (reveal xs);
+            rewrite each hd0 as old_hd;
+            pop_node_agrees old_hd next_hd v (reveal xs);
+            GR.gather s.contents.gr;
+            GR.(s.contents.gr := list_tl (reveal xs));
+            GR.share s.contents.gr;
+            fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
+            assert (pure (Some v == list_hd_opt (reveal xs)));
+            fold (AP.cond true
+              (GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)) **
+               pure (Some v == list_hd_opt (reveal xs)))
+              (GR.pts_to s.contents.gr #0.5R xs **
+               persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+               pure (not (B.is_null old_hd))));
+            true
+          } else {
+            elim_cond_false _ _;
+            fold (stack_inv_inner s.head s.contents.gr); fold (stack_inv s);
+            fold (AP.cond false
+              (GR.pts_to s.contents.gr #0.5R (list_tl (reveal xs)) **
+               pure (Some v == list_hd_opt (reveal xs)))
+              (GR.pts_to s.contents.gr #0.5R xs **
+               persistent_pts_to old_hd ({ value = v; nd_next = next_hd }) **
+               pure (not (B.is_null old_hd))));
+            false
+          }
+        };
+        if b {
+          elim_cond_true _ _;
+          fold (is_stack_handle s);
+          assert (pure (Some v == list_hd_opt (reveal xs)));
+          fold (stack_content s.contents (list_tl (reveal xs)));
+          fold (is_stack s (list_tl (reveal xs)));
+          fold (pop_post s (reveal xs) (Some v));
+          Some (Some v)
+        } else {
+          elim_cond_false _ _;
+          fold (is_stack_handle s);
+          fold (stack_content s.contents (reveal xs));
+          fold (is_stack s (reveal xs));
+          None #(option t)
+        }
+      };
+    match attempt {
+      Some ov -> {
+        with _x. assert (phi ov ** is_stack_handle s);
+        ov
+      }
+      None -> {
+        drop_ (persistent_pts_to old_hd ({ value = v; nd_next = next_hd }));
+        drop_ (pure (not (B.is_null old_hd)));
+        pop_loop s phi tok ()
+      }
     }
   }
 }
