@@ -8,11 +8,11 @@
     with a fresh AU witness.
 
     The inner LAT exposes a CAS-from-[expected]-to-[new_val] spec.  The
-    outer FAA LAT composes through that inner LAT as a black box by opening
-    the outer AU with [au_atomic_step], packaging its current α resource
-    into the inner AU, and letting [cas_loop]'s successful bracketed CAS
-    step produce the outer β resource returned to the outer bracket.  Thus
-    both examples use only the bracketed AU combinator in user-facing code.
+    outer FAA LAT uses the same bracketed one-attempt pattern for its own
+    successful CAS LP: [au_atomic_step] opens the outer AU, the atomic body
+    performs one CAS attempt, and [Some]/[None] immediately commits or
+    aborts.  Thus both LAT levels use only the bracketed AU combinator in
+    user-facing code.
 
     Adapted from a previously-pruned [PulseTutorial.NestedLP] which had
     used a non-faithful LL/SC kernel.  Here the bottom layer is the
@@ -297,20 +297,16 @@ let cas_is_lat (c:counter) (expected new_val : U32.t) (#is:inames)
   = cas_loop c expected new_val
 
 (* ================================================================ *)
-(* OUTER LAT — fetch-and-add, implemented by calling cas_loop       *)
-(* as a black-box LAT.                                              *)
+(* OUTER LAT — fetch-and-add via a bracketed CAS LP attempt         *)
 (*                                                                  *)
 (*   <<< ∀∀ n, ctr_val γ n >>>                                      *)
 (*     faa_via_cas c delta @ is                                     *)
 (*   <<< ctr_val γ (n + delta) ** pure(old == n) | RET old >>>      *)
 (*                                                                  *)
-(* The body never touches the box directly.  It uses outer           *)
-(* [au_atomic_step] to package the current outer α witness into the  *)
-(* inner CAS AU, then forwards to [cas_loop].                        *)
-(*                                                                  *)
-(* When cas_loop hits its bracketed [au_atomic_step] LP (a successful*)
-(* CAS), it commits the inner AU and returns the outer β resource to *)
-(* the outer bracket. Outer.LP = inner.LP = the physical CAS step.   *)
+(* The outer operation is also written in the bracketed style: each  *)
+(* iteration samples a candidate value, then [au_atomic_step] opens  *)
+(* the outer AU only around the successful-CAS LP attempt. CAS loss  *)
+(* returns [None] and retries with a fresh outer AU witness.         *)
 (* ================================================================ *)
 
 fn rec faa_via_cas (c:counter) (delta:U32.t)
@@ -325,51 +321,70 @@ fn rec faa_via_cas (c:counter) (delta:U32.t)
   returns old : U32.t
   ensures is_ctr c ** phi old
 {
-  // Cheap read to pick the CAS witness we will offer to the inner LAT.
+  // Cheap read to pick the CAS witness for this outer FAA iteration.
   let old_n = read_ctr c;
   let new_n = U32.add_mod old_n delta;
   later_credit_buy 3;
   let attempt = au_atomic_step
-    #is #emp_inames #U32.t #U32.t
+    #is #(add_inv emp_inames c.ci) #U32.t #U32.t
     #(fun n -> ctr_val c.cg n)
     #(fun n old -> ctr_val c.cg (U32.add_mod n delta) ** pure (old == n))
     #(fun _ old -> phi old)
     #(is_ctr c)
     #(fun _ -> is_ctr c)
     tok
-    fn x {
-      intro_forall #unit
-        #(fun (_:unit) -> trade #is
-          (later_credit 1 ** ctr_val c.cg new_n ** pure (reveal x == old_n))
-          (ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x)))
-        emp
-        fn _ {
-          intro_trade #is
-            (later_credit 1 ** ctr_val c.cg new_n ** pure (reveal x == old_n))
-            (ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x))
-            emp
-            fn _ {
-              drop_ (later_credit 1);
-              // Translate the inner CAS postcondition into the outer FAA beta.
-              rewrite (ctr_val c.cg new_n) as (ctr_val c.cg (U32.add_mod (reveal x) delta));
-            }
-        };
-      let inner_tok = au_intro
-        #is #U32.t #unit
-        #(fun n -> ctr_val c.cg n)
-        #(fun n _ -> ctr_val c.cg new_n ** pure (n == old_n))
-        #(fun _ _ -> ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x))
-        x;
-      drop_ (later_credit 1);
-      // LP: [cas_loop]'s successful au_atomic_step CAS commits this inner AU;
-      // the outer au_atomic_step then commits the FAA AU at the same LP.
-      cas_loop c old_n new_n
-        (fun _ -> ctr_val c.cg (U32.add_mod (reveal x) delta) ** pure (old_n == reveal x))
-        inner_tok ();
-      Some old_n
+    fn n {
+      unfold ctr_val;
+      unfold is_ctr;
+      let b = with_invariants_a bool emp_inames c.ci (ctr_inv c)
+        (GR.pts_to c.cg.gr #0.5R n)
+        (fun b -> AP.cond b
+          (GR.pts_to c.cg.gr #0.5R new_n ** pure (reveal n == old_n))
+          (GR.pts_to c.cg.gr #0.5R n))
+      fn _ {
+        unfold ctr_inv; unfold ctr_inv_inner;
+        // LP: successful CAS inside au_atomic_step implements the FAA update.
+        let b = cas_box c.loc old_n new_n;
+        if b {
+          elim_cond_true _ _;
+          with n0. assert (B.pts_to c.loc new_n **
+            GR.pts_to c.cg.gr #0.5R n0 ** GR.pts_to c.cg.gr #0.5R n);
+          GR.pts_to_injective_eq c.cg.gr;
+          rewrite each n0 as (reveal n);
+          GR.gather c.cg.gr;
+          GR.(c.cg.gr := new_n);
+          GR.share c.cg.gr;
+          fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+          fold (AP.cond true
+            (GR.pts_to c.cg.gr #0.5R new_n ** pure (reveal n == old_n))
+            (GR.pts_to c.cg.gr #0.5R n));
+          true
+        } else {
+          elim_cond_false _ _;
+          fold (ctr_inv_inner c.loc c.cg.gr); fold (ctr_inv c);
+          fold (AP.cond false
+            (GR.pts_to c.cg.gr #0.5R new_n ** pure (reveal n == old_n))
+            (GR.pts_to c.cg.gr #0.5R n));
+          false
+        }
+      };
+      fold (is_ctr c);
+      if b {
+        elim_cond_true _ _;
+        fold (ctr_val c.cg new_n);
+        rewrite (ctr_val c.cg new_n) as (ctr_val c.cg (U32.add_mod (reveal n) delta));
+        Some old_n
+      } else {
+        elim_cond_false _ _;
+        fold (ctr_val c.cg n);
+        None #U32.t
+      }
     };
   match attempt {
-    Some old -> { old }
+    Some old -> {
+      with _x. assert (phi old ** is_ctr c);
+      old
+    }
     None -> { faa_via_cas c delta phi tok () }
   }
 }
