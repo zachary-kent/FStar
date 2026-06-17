@@ -1584,3 +1584,29 @@ let core_age1 (m: premem) : Lemma (core (age1_ m) == age1_ (core m)) =
 let core_le (m: premem) : Lemma (mem_le (core m) m) =
   core_id m;
   mem_le_iff (core m) m
+
+(**** Persistence modality (IGU 5.3) *)
+
+let pers_pred (p: slprop) : mem_pred =
+  F.on_dom premem #(fun _ -> prop) (fun m -> p (core m))
+
+let pers_hereditary (p: slprop) : Lemma (hereditary (pers_pred p)) =
+  reveal_slprop_ok ();
+  introduce forall h. pers_pred p h ==> pers_pred p (age1_ h) with introduce _ ==> _ with _. (
+    core_age1 h;
+    assert (core (age1_ h) == age1_ (core h));
+    assert (p (age1_ (core h)))
+  )
+
+let pers_affine (p: slprop) : Lemma (mem_pred_affine (pers_pred p)) =
+  reveal_slprop_ok ();
+  introduce forall a b. mem_le a b /\ pers_pred p a ==> pers_pred p b with introduce _ ==> _ with _. (
+    core_mono a b;
+    assert (mem_le (core a) (core b));
+    assert (p (core b))
+  )
+
+let pers (p: slprop) : slprop =
+  pers_hereditary p;
+  pers_affine p;
+  mk_slprop (pers_pred p)

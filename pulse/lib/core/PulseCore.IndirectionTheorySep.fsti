@@ -535,3 +535,6 @@ val core_mono : m1:premem -> m2:premem ->
         (ensures mem_le (core m1) (core m2))
 val core_age1 : m:premem -> Lemma (core (age1_ m) == age1_ (core m))
 val core_le : m:premem -> Lemma (mem_le (core m) m)
+
+(**** Persistence modality, IGU §5.3 *)
+val pers : slprop -> slprop
