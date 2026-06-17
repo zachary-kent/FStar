@@ -38,3 +38,22 @@ ghost fn pers_inv_dup_elim (i: iname) (p: slprop)
   pers_elim (inv i p);
   drop_ (pers (inv i p))
 }
+
+(** The slprop-ref persistence path supports intro, duplication, and elimination. *)
+ghost fn pers_slprop_ref_dup_elim (r: slprop_ref) (p: slprop)
+  requires slprop_ref_pts_to r p
+  ensures slprop_ref_pts_to r p
+{
+  pers_intro_slprop_ref r p;
+  pers_dup (slprop_ref_pts_to r p);
+  pers_elim (slprop_ref_pts_to r p);
+  drop_ (pers (slprop_ref_pts_to r p))
+}
+
+(** Persistent slprop-ref and invariant evidence can be recombined under [pers]. *)
+ghost fn pers_slprop_ref_inv_star_intro (r: slprop_ref) (p: slprop) (i: iname) (q: slprop)
+  requires pers (slprop_ref_pts_to r p) ** pers (inv i q)
+  ensures pers (slprop_ref_pts_to r p ** inv i q)
+{
+  pers_intro_star (slprop_ref_pts_to r p) (inv i q)
+}
