@@ -240,9 +240,16 @@ let pers_elim p = A.pers_elim_g p
 
 let pers_intro_pure phi = A.pers_intro_pure_g phi
 
+let pers_intro_emp () = A.pers_intro_emp_g ()
+
 let pers_intro_inv i p = A.pers_intro_inv_g i p
 
 let pers_intro_star p q = A.pers_intro_star_g p q
+
+let pers_intro_exists #a p e =
+  A.bind_ghost
+    (A.intro_exists (fun x -> pers (p x)) e)
+    (fun _ -> rewrite_eq (exists* x. pers (p x)) (pers (exists* x. p x)) (Sep.pers_exists_sym p))
 
 let later_star = Sep.later_star
 let later_exists #t f =

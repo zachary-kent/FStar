@@ -1682,6 +1682,9 @@ let pers_later (p: slprop) : squash (pers (later p) == later (pers p)) =
 let pers_exists (#a: Type u#a) (f: a -> slprop) : squash (pers (exists* x. f x) == (exists* x. pers (f x))) =
   mem_pred_ext (pers (exists* x. f x)) (exists* x. pers (f x)) fun _ -> ()
 
+let pers_exists_sym (#a: Type u#a) (f: a -> slprop) : squash ((exists* x. pers (f x)) == pers (exists* x. f x)) =
+  mem_pred_ext (exists* x. pers (f x)) (pers (exists* x. f x)) fun _ -> ()
+
 let pers_intro_inv (i: iref) (p: slprop) : squash (inv i p `implies` pers (inv i p)) =
   implies_intro (inv i p) (pers (inv i p)) fun m ->
     read_core m i;

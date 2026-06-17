@@ -54,6 +54,7 @@ val pers (p: slprop) : slprop
 val pers_dup (p: slprop) : Lemma (implies (pers p) (pers p ** pers p))
 val pers_elim (p: slprop) : Lemma (implies (pers p) p)
 val pers_pure (phi: prop) : Lemma (implies (pure phi) (pers (pure phi)))
+val pers_emp () : Lemma (implies emp (pers emp))
 val pers_intro_inv (i: iref) (p: slprop) : Lemma (implies (inv i p) (pers (inv i p)))
 
 val slprop_equiv (p q:slprop) : prop

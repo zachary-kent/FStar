@@ -557,11 +557,17 @@ val pers_elim (p: slprop)
 val pers_intro_pure (phi: prop)
   : stt_ghost unit emp_inames (pure phi) (fun _ -> pers (pure phi))
 
+val pers_intro_emp ()
+  : stt_ghost unit emp_inames emp (fun _ -> pers emp)
+
 val pers_intro_inv (i: iname) (p: slprop)
   : stt_ghost unit emp_inames (inv i p) (fun _ -> pers (inv i p))
 
 val pers_intro_star (p q: slprop)
   : stt_ghost unit emp_inames (pers p ** pers q) (fun _ -> pers (p ** q))
+
+val pers_intro_exists (#a: Type) (p: a -> slprop) (e: a)
+  : stt_ghost unit emp_inames (pers (p e)) (fun _ -> pers (exists* x. p x))
 
 val later_star p q : squash (later (p ** q) == later p ** later q)
 val later_exists (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (later (exists* x. f x)) (fun _ -> exists* x. later (f x))

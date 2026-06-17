@@ -29,6 +29,18 @@ let trade_elim_exists (is:inames) (hyp extra concl:slprop) : slprop =
 let trade (#is:inames) (hyp concl:slprop) =
   exists* extra. extra ** trade_elim_exists is hyp extra concl
 
+let trade_emp_of_hyp
+  (hyp concl : slprop)
+  (f_elim : unit -> stt_ghost unit emp_inames hyp (fun _ -> concl))
+  (_ : unit)
+  : trade_f #emp_inames hyp #emp concl =
+  sub_ghost
+    #unit #emp_inames #hyp (emp ** hyp)
+    #(fun _ -> concl) (fun _ -> concl)
+    (slprop_equiv_sym (emp ** hyp) hyp (slprop_equiv_unit hyp))
+    (intro_slprop_post_equiv (fun _ -> concl) (fun _ -> concl) (fun _ -> slprop_equiv_refl concl))
+    (f_elim ())
+
 
 ghost
 fn intro_trade
@@ -42,6 +54,23 @@ fn intro_trade
   fold (trade_elim_exists is hyp extra concl);
   assert (extra ** trade_elim_exists is hyp extra concl);
   fold (trade #is hyp concl)
+}
+
+ghost
+fn pers_intro_trade
+  (hyp concl : slprop)
+  (f_elim : unit -> stt_ghost unit emp_inames hyp (fun _ -> concl))
+  requires emp
+  ensures pers (trade #emp_inames hyp concl)
+{
+  nonempty_intro (trade_emp_of_hyp hyp concl f_elim <: trade_elim_t emp_inames hyp emp concl);
+  intro_pure (nonempty (trade_elim_t emp_inames hyp emp concl)) ();
+  pers_intro_pure (nonempty (trade_elim_t emp_inames hyp emp concl));
+  pers_intro_emp ();
+  pers_intro_star emp (trade_elim_exists emp_inames hyp emp concl);
+  pers_intro_exists (fun extra -> extra ** trade_elim_exists emp_inames hyp extra concl) emp;
+  rewrite (pers (exists* (extra:slprop). extra ** trade_elim_exists emp_inames hyp extra concl))
+       as (pers (trade #emp_inames hyp concl))
 }
 
 fn introducable_trade_aux u#a (t: Type u#a) is is'

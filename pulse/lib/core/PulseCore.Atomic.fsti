@@ -316,6 +316,9 @@ val pers_elim_g (p: slprop)
 val pers_intro_pure_g (phi: prop)
   : stt_ghost unit emp_inames (pure phi) (fun _ -> pers (pure phi))
 
+val pers_intro_emp_g ()
+  : stt_ghost unit emp_inames emp (fun _ -> pers emp)
+
 val pers_intro_inv_g (i: iref) (p: slprop)
   : stt_ghost unit emp_inames (Sep.inv i p) (fun _ -> Sep.pers (Sep.inv i p))
 

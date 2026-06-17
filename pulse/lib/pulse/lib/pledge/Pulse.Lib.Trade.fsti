@@ -56,6 +56,13 @@ fn intro_trade
   requires extra
   ensures trade #is hyp concl
 
+ghost
+fn pers_intro_trade
+  (hyp concl : slprop)
+  (f_elim : unit -> stt_ghost unit emp_inames hyp (fun _ -> concl))
+  requires emp
+  ensures pers (trade #emp_inames hyp concl)
+
 instance val introducable_trade (t: Type u#a) is is'
     hyp extra concl {| introducable is' (extra ** hyp) concl t |} :
     introducable is extra (trade #is' hyp concl) t

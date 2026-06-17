@@ -62,6 +62,7 @@ let pers = Sep.pers
 let pers_dup p = Sep.pers_dup p
 let pers_elim p = Sep.pers_elim p
 let pers_pure phi = Sep.pers_pure phi
+let pers_emp () = Sep.pers_emp ()
 let pers_intro_inv i p = Sep.pers_intro_inv i p
 
 let slprop_equiv p q = p == q

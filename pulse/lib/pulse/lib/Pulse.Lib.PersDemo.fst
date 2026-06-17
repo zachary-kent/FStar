@@ -9,6 +9,7 @@ module Pulse.Lib.PersDemo
 
 open Pulse.Main
 open Pulse.Lib.Core
+open Pulse.Lib.Trade
 
 (** Smoke-test the pure rule, duplication, elimination, and affine dropping. *)
 ghost fn pers_pure_roundtrip ()
@@ -19,6 +20,19 @@ ghost fn pers_pure_roundtrip ()
   pers_dup (pure True);
   pers_elim (pure True);
   drop_ (pers (pure True))
+}
+
+(** A closed trade body can be introduced persistently, duplicated, eliminated,
+    and then fired without ever using a model-level [pure (implies _ _)] fact. *)
+ghost fn pers_trade_emp_roundtrip ()
+  requires emp
+  ensures emp
+{
+  pers_intro_trade emp emp fn _ {};
+  pers_dup (trade #emp_inames emp emp);
+  pers_elim (trade #emp_inames emp emp);
+  elim_trade #emp_inames emp emp;
+  drop_ (pers (trade #emp_inames emp emp))
 }
 
 (** A persistent invariant token can be introduced from a plain invariant token. *)

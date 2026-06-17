@@ -300,6 +300,10 @@ let pers_intro_pure_g phi =
   I.pers_pure phi;
   implies_elim (pure phi) (pers (pure phi))
 
+let pers_intro_emp_g () =
+  I.pers_emp ();
+  implies_elim emp (pers emp)
+
 let pers_intro_inv_g i p =
   Sep.pers_intro_inv i p;
   I.implies_from_sep (Sep.inv i p) (Sep.pers (Sep.inv i p));
