@@ -51,19 +51,19 @@ ghost fn aacc_inv_demo
     (k : (x : erased a) -> unit -> stt_ghost b emp_inames
            (alpha x ** big_i)
            (fun y -> beta x y ** big_i))
-  requires inv i big_i ** atomic_update alpha beta phi ** later_credit 1
+  requires inv i big_i ** atomic_update emp_inames alpha beta phi ** later_credit 1
   opens add_inv emp_inames i
   returns y : b
   ensures (exists* (x : a). phi x y)
 {
   with_invariants_g b emp_inames i big_i
-    (atomic_update alpha beta phi)
+    (atomic_update emp_inames alpha beta phi)
     (fun y -> exists* (x : a). phi x y)
   fn _ {
-    let x = au_open alpha beta phi;
+    let x = au_open emp_inames alpha beta phi;
     let y = call_g (k x) ();
-    au_commit alpha beta phi x y;
-    drop_ (alpha x @==> atomic_update alpha beta phi);
+    au_commit emp_inames alpha beta phi x y;
+    drop_ (trade #emp_inames (alpha x) (atomic_update emp_inames alpha beta phi));
     intro_exists #a (fun x -> phi x y) x;
     y
   }
