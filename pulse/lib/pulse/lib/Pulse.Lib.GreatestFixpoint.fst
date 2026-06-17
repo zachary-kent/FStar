@@ -22,6 +22,12 @@ let post_fp_obligation (f : slprop -> slprop) (p : slprop) : slprop =
 let bi_gfp (f : slprop -> slprop) : slprop =
   exists* (p : slprop). post_fp_obligation f p ** p
 
+let post_fp_pers_obligation (f : slprop -> slprop) (p : slprop) : slprop =
+  pers (trade p (f p))
+
+let bi_gfp_pers (f : slprop -> slprop) : slprop =
+  exists* (p : slprop). post_fp_pers_obligation f p ** p
+
 ghost fn bi_gfp_intro (f : slprop -> slprop) (p : slprop)
   requires pure (implies p (f p)) ** p
   ensures bi_gfp f
@@ -29,6 +35,15 @@ ghost fn bi_gfp_intro (f : slprop -> slprop) (p : slprop)
   fold (post_fp_obligation f p);
   fold (exists* (q : slprop). post_fp_obligation f q ** q);
   fold (bi_gfp f)
+}
+
+ghost fn bi_gfp_pers_intro (f : slprop -> slprop) (p : slprop)
+  requires pers (trade p (f p)) ** p
+  ensures bi_gfp_pers f
+{
+  fold (post_fp_pers_obligation f p);
+  fold (exists* (q : slprop). post_fp_pers_obligation f q ** q);
+  fold (bi_gfp_pers f)
 }
 
 (** Closure used as f_elim for intro_trade in bi_gfp_unfold:
@@ -62,6 +77,31 @@ ghost fn bi_gfp_unfold (f : slprop -> slprop) {| mono : mono_slprop f |}
   // Have: f phi ** trade phi (bi_gfp f)
   // Apply mono to lift f phi to f (bi_gfp f), consuming the trade.
   call (mono.mono_lemma phi (bi_gfp f)) ()
+}
+
+(** Closure used as f_elim for intro_trade in bi_gfp_pers_unfold:
+    given a persistent copy of [phi -* f phi] plus [phi], repack [bi_gfp_pers f]. *)
+ghost fn cvt_phi_to_gfp_pers (f : slprop -> slprop) (phi : slprop) (_ : unit)
+  requires pers (trade phi (f phi)) ** phi
+  ensures bi_gfp_pers f
+{
+  bi_gfp_pers_intro f phi
+}
+
+ghost fn bi_gfp_pers_unfold (f : slprop -> slprop) {| mono : mono_slprop f |}
+  requires bi_gfp_pers f
+  ensures f (bi_gfp_pers f)
+{
+  unfold (bi_gfp_pers f);
+  with phi. assert (post_fp_pers_obligation f phi ** phi);
+  unfold (post_fp_pers_obligation f phi);
+  // Duplicate the persistent wand: one copy is captured to rebuild the gfp,
+  // the other is eliminated and fired on [phi] to produce [f phi].
+  pers_dup (trade phi (f phi));
+  intro_trade #emp_inames phi (bi_gfp_pers f) (pers (trade phi (f phi))) (cvt_phi_to_gfp_pers f phi);
+  pers_elim (trade phi (f phi));
+  elim_trade #emp_inames phi (f phi);
+  call (mono.mono_lemma phi (bi_gfp_pers f)) ()
 }
 
 (** Identity functor + instance + demo. *)

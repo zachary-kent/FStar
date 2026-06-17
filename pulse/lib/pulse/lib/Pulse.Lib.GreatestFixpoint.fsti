@@ -31,11 +31,20 @@ open Pulse.Lib.Trade
 (** The greatest fixed point of an slprop transformer [F]. *)
 val bi_gfp (f : slprop -> slprop) : slprop
 
+(** Iris-faithful additive encoding using the persistence modality:
+      exists Phi. <pers> (Phi -* F Phi) ** Phi. *)
+val bi_gfp_pers (f : slprop -> slprop) : slprop
+
 (** Coinductive introduction: any [P] with a meta-level entailment
     [P |- F P] inhabits the gfp. The Pulse analog of Iris's coiter rule. *)
 ghost fn bi_gfp_intro (f : slprop -> slprop) (p : slprop)
   requires pure (implies p (f p)) ** p
   ensures bi_gfp f
+
+(** Additive coinductive introduction with a persistent Pulse trade. *)
+ghost fn bi_gfp_pers_intro (f : slprop -> slprop) (p : slprop)
+  requires pers (trade p (f p)) ** p
+  ensures bi_gfp_pers f
 
 (** Monotonicity of [F]: a one-shot conversion [p ~> q] (as a [trade])
     lifts to [F p ~> F q]. Iris's BiMonoPred via Pulse trades. *)
@@ -52,6 +61,11 @@ class mono_slprop (f : slprop -> slprop) = {
 ghost fn bi_gfp_unfold (f : slprop -> slprop) {| mono_slprop f |}
   requires bi_gfp f
   ensures f (bi_gfp f)
+
+(** Coinductive elimination for the additive/persistent encoding. *)
+ghost fn bi_gfp_pers_unfold (f : slprop -> slprop) {| mono_slprop f |}
+  requires bi_gfp_pers f
+  ensures f (bi_gfp_pers f)
 
 (** Tiny instance + demo: identity functor. *)
 val id_slprop (p : slprop) : slprop
