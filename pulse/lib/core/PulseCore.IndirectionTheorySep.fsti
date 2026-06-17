@@ -19,9 +19,13 @@ module F = FStar.FunctionalExtensionality
 module PM = PulseCore.MemoryAlt
 module B = PulseCore.BaseHeapSig
 open Pulse.Lib.Loc
+open PulseCore.KnotInstantiation
 open FStar.Ghost 
 
 let timeless_mem : Type u#4 = PM.mem u#0
+
+val mem_le : premem -> premem -> prop
+val age1_ (w: premem) : w':premem { level_ w == 0 ==> w' == w }
 
 val mem: Type u#4
 val timeless_mem_of: mem -> timeless_mem
@@ -57,6 +61,8 @@ let full_mem = m:mem { is_full m  }
 
 val emp : slprop
 val pure (p:prop) : slprop
+val disjoint_mem : premem -> premem -> prop
+val join_premem : is0:premem -> is1:premem { disjoint_mem is0 is1 } -> premem
 val star (p q:slprop) : slprop
 val ( exists* ) (#a:Type u#a) (f:a -> slprop) : slprop
 val exists_ext (#a:Type u#a) (p q : a -> slprop)
@@ -514,3 +520,18 @@ val slprop_ref_pts_to_gather (x: slprop_ref) (y1 y2: slprop)
           (slprop_ref_pts_to x y1 `star` later (equiv y1 y2)))
 
 val on_slprop_ref_pts_to_eq l x y : squash (on l (slprop_ref_pts_to x y) == slprop_ref_pts_to x y)
+
+(**** Core operation on premem: Iris camera core, IGU §4.4 *)
+val core : premem -> premem
+val core_id : m:premem ->
+  Lemma (disjoint_mem (core m) m /\ join_premem (core m) m == m)
+val core_idem : m:premem -> Lemma (core (core m) == core m)
+val core_dist : m1:premem -> m2:premem ->
+  Lemma (requires disjoint_mem m1 m2)
+        (ensures disjoint_mem (core m1) (core m2) /\
+                 join_premem (core m1) (core m2) == core (join_premem m1 m2))
+val core_mono : m1:premem -> m2:premem ->
+  Lemma (requires mem_le m1 m2)
+        (ensures mem_le (core m1) (core m2))
+val core_age1 : m:premem -> Lemma (core (age1_ m) == age1_ (core m))
+val core_le : m:premem -> Lemma (mem_le (core m) m)

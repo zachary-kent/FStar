@@ -207,13 +207,24 @@ let join_premem (is0:premem) (is1:premem { disjoint_mem is0 is1 }) =
       | Inv p, _ | _, Inv p -> Inv p)
   }
 
+let join_hogs_val (n: erased nat) (x y: hogs_val) : hogs_val =
+  match x, y with
+  | None, None -> None
+  | Pred p, _ | _, Pred p -> Pred (approx n p)
+  | Inv p, _ | _, Inv p -> Inv (approx n p)
+
 let read_join_premem (is0:premem) (is1:premem { disjoint_mem is0 is1 }) a :
   Lemma (read (join_premem is0 is1) a ==
-    (match read is0 a, read is1 a with
-    | None, None -> None
-    | Pred p, _ | _, Pred p -> Pred (approx (level_ is0) p)
-    | Inv p, _ | _, Inv p -> Inv (approx (level_ is0) p))) =
+    join_hogs_val (level_ is0) (read is0 a) (read is1 a)) =
   ()
+
+let join_hogs_val_cong (n1 n2: erased nat) (x1 x2 y1 y2: hogs_val) :
+    Lemma (requires n1 == n2 /\ x1 == x2 /\ y1 == y2)
+      (ensures join_hogs_val n1 x1 y1 == join_hogs_val n2 x2 y2) =
+  ()
+
+let hogs_val_eq_sym (x y: hogs_val) : Lemma (requires x == y) (ensures y == x) = ()
+let hogs_val_eq_trans (x y z: hogs_val) : Lemma (requires x == y /\ y == z) (ensures x == z) = ()
 
 let join_premem_commutative (is0:premem) (is1:premem { disjoint_mem is0 is1 }) :
     Lemma (disjoint_mem is1 is0 /\ join_premem is0 is1 == join_premem is1 is0) =
@@ -1454,3 +1465,122 @@ let loeb (p: slprop { implies' (later p) p }) : squash (implies' emp p) =
   let rec aux (m: premem) : Lemma (ensures p m) (decreases level_ m) =
     if level_ m > 0 then aux (age1_ m) else () in
   introduce forall m. p m with aux m
+(**** Core / persistence support (IGU 4.4 CAMERA-CORE family) *)
+
+(* [core m] zeroes the linear part of the heap (timeless heap, credits) while
+   preserving the persistent HOGS fragment and the passive parameters
+   (level, current_loc). Semantically this realises the Iris camera operation
+   |a| (the "core" of a) on Pulse's [premem]. *)
+
+let core (m: premem) : premem =
+  pack (level_ m) {
+    saved_credits = 0;
+    timeless_heap = B.empty_mem;
+    current_loc = current_loc_ m;
+    hogs = (fun a -> read m a);
+  }
+
+let read_core (m: premem) (a: address) :
+    Lemma (read (core m) a == read m a) [SMTPat (read (core m) a)] =
+  approx_read m a
+
+let level_core (m: premem) : Lemma (level_ (core m) == level_ m) [SMTPat (level_ (core m))] = ()
+let credits_core (m: premem) : Lemma (credits_ (core m) == 0) [SMTPat (credits_ (core m))] = ()
+let current_loc_core (m: premem) : Lemma (current_loc_ (core m) == current_loc_ m) [SMTPat (current_loc_ (core m))] = ()
+let timeless_heap_of_core (m: premem) :
+    Lemma (timeless_heap_of (core m) == B.empty_mem) [SMTPat (timeless_heap_of (core m))] = ()
+
+let core_disjoint (m: premem) : Lemma (disjoint_mem (core m) m /\ disjoint_mem m (core m)) =
+  H2.join_empty (timeless_heap_of m);
+  H2.disjoint_sym B.empty_mem (timeless_heap_of m)
+
+let core_id (m: premem) : Lemma (disjoint_mem (core m) m /\ join_premem (core m) m == m) =
+  core_disjoint m;
+  H2.join_empty (timeless_heap_of m);
+  H2.join_commutative (timeless_heap_of m) B.empty_mem;
+  mem_ext (join_premem (core m) m) m (fun a -> ())
+
+let core_idem (m: premem) : Lemma (core (core m) == core m) =
+  mem_ext (core (core m)) (core m) (fun a -> ())
+
+let read_core_dist_at (m1 m2: premem) (a: address) :
+    Lemma (requires disjoint_mem m1 m2 /\ disjoint_mem (core m1) (core m2))
+      (ensures read (join_premem (core m1) (core m2)) a == read (core (join_premem m1 m2)) a) =
+  read_core m1 a;
+  read_core m2 a;
+  level_core m1;
+  read_join_premem (core m1) (core m2) a;
+  read_join_premem m1 m2 a;
+  join_hogs_val_cong (level_ (core m1)) (level_ m1)
+    (read (core m1) a) (read m1 a)
+    (read (core m2) a) (read m2 a);
+  assert (read (join_premem (core m1) (core m2)) a == read (join_premem m1 m2) a);
+  read_core (join_premem m1 m2) a;
+  hogs_val_eq_sym (read (core (join_premem m1 m2)) a) (read (join_premem m1 m2) a);
+  hogs_val_eq_trans
+    (read (join_premem (core m1) (core m2)) a)
+    (read (join_premem m1 m2) a)
+    (read (core (join_premem m1 m2)) a)
+
+let core_dist (m1 m2: premem) :
+    Lemma (requires disjoint_mem m1 m2)
+      (ensures
+        disjoint_mem (core m1) (core m2) /\
+        join_premem (core m1) (core m2) == core (join_premem m1 m2)) =
+  H2.join_empty B.empty_mem;
+  introduce forall a. hogs_val_compat (read (core m1) a) (read (core m2) a) with (
+    read_core m1 a;
+    read_core m2 a;
+    disjoint_hogs_read m1 m2 a;
+    match read m1 a, read m2 a with
+    | None, _ -> ()
+    | _, None -> ()
+    | Pred _, Pred _ -> ()
+    | Inv _, Inv _ -> ()
+    | Inv _, Pred _ -> ()
+    | Pred _, Inv _ -> ()
+  );
+  level_core m1;
+  level_core m2;
+  current_loc_core m1;
+  current_loc_core m2;
+  timeless_heap_of_core m1;
+  timeless_heap_of_core m2;
+  assert (level_ (core m1) == level_ (core m2));
+  assert (current_loc_ (core m1) == current_loc_ (core m2));
+  H2.join_empty (timeless_heap_of (core m1));
+  H2.disjoint_sym (timeless_heap_of (core m1)) (timeless_heap_of (core m2));
+  assert (B.disjoint_mem (timeless_heap_of (core m1)) (timeless_heap_of (core m2)));
+  assert (disjoint_hogs (core m1) (core m2));
+  assert (disjoint_mem (core m1) (core m2));
+  assert (level_ (join_premem (core m1) (core m2)) == level_ (core (join_premem m1 m2)));
+  assert (credits_ (join_premem (core m1) (core m2)) == credits_ (core (join_premem m1 m2)));
+  assert (current_loc_ (join_premem (core m1) (core m2)) == current_loc_ (core (join_premem m1 m2)));
+  assert (timeless_heap_of (join_premem (core m1) (core m2)) == timeless_heap_of (core (join_premem m1 m2)));
+  introduce forall a.
+    read (join_premem (core m1) (core m2)) a == read (core (join_premem m1 m2)) a
+  with (
+    assert (disjoint_mem m1 m2);
+    assert (disjoint_mem (core m1) (core m2));
+    read_core_dist_at m1 m2 a
+  );
+  mem_ext (join_premem (core m1) (core m2)) (core (join_premem m1 m2)) (fun a -> ())
+
+(* Prove core_mono by routing through core_dist and mem_le_iff so we never have
+   to manually witness timeless_heap_le on empty heaps. *)
+let core_mono (m1 m2: premem) :
+    Lemma (requires mem_le m1 m2) (ensures mem_le (core m1) (core m2)) =
+  mem_le_iff m1 m2;
+  eliminate exists w3. join_premem m1 w3 == m2
+  returns mem_le (core m1) (core m2)
+  with _. (
+    core_dist m1 w3;
+    mem_le_iff (core m1) (core m2)
+  )
+
+let core_age1 (m: premem) : Lemma (core (age1_ m) == age1_ (core m)) =
+  mem_ext (core (age1_ m)) (age1_ (core m)) (fun a -> ())
+
+let core_le (m: premem) : Lemma (mem_le (core m) m) =
+  core_id m;
+  mem_le_iff (core m) m
