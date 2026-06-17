@@ -25,6 +25,9 @@ val pure (p:prop) : slprop
 val ( ** ) (p q : slprop) : slprop
 val ( exists* ) (#a:Type u#a) (p: a -> slprop) : slprop
 val implies (p q : slprop) : prop
+val implies_from_sep (p q: slprop) :
+  Lemma (requires PulseCore.IndirectionTheorySep.implies p q)
+        (ensures implies p q)
 val later_credit (n:nat) : slprop
 val later (p:slprop) : slprop
 val equiv (p q:slprop) : slprop

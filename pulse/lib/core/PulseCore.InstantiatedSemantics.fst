@@ -50,6 +50,7 @@ let pure p = pure p
 let op_Star_Star = star
 let op_exists_Star #a p = op_exists_Star #a p
 let implies = implies
+let implies_from_sep p q = ()
 let later_credit = later_credit
 let later = later
 let equiv = equiv

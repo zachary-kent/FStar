@@ -18,6 +18,7 @@ module PulseCore.Atomic
 
 module A = PulseCore.Action
 module I = PulseCore.InstantiatedSemantics
+module Sep = PulseCore.IndirectionTheorySep
 module Set = FStar.GhostSet
 open PulseCore.InstantiatedSemantics
 open PulseCore.Action
@@ -286,6 +287,32 @@ let invariant_name_identifies_invariant p q i j =
 let later_intro p = lift_neutral_ghost (A.later_intro p)
 let later_elim p = lift_neutral_ghost (A.later_elim p)
 let implies_elim p q = lift_neutral_ghost (A.implies_elim p q)
+
+let pers_dup_g p =
+  Sep.pers_dup p;
+  I.implies_from_sep (Sep.pers p) (Sep.star (Sep.pers p) (Sep.pers p));
+  implies_elim (Sep.pers p) (Sep.star (Sep.pers p) (Sep.pers p))
+
+let pers_elim_g p =
+  Sep.pers_elim p;
+  I.implies_from_sep (Sep.pers p) p;
+  implies_elim (Sep.pers p) p
+
+let pers_intro_pure_g phi =
+  Sep.pers_pure phi;
+  I.implies_from_sep (Sep.pure phi) (Sep.pers (Sep.pure phi));
+  implies_elim (Sep.pure phi) (Sep.pers (Sep.pure phi))
+
+let pers_intro_inv_g i p =
+  Sep.pers_intro_inv i p;
+  I.implies_from_sep (Sep.inv i p) (Sep.pers (Sep.inv i p));
+  implies_elim (Sep.inv i p) (Sep.pers (Sep.inv i p))
+
+let pers_intro_slprop_ref_g r p =
+  Sep.pers_intro_slprop_ref r p;
+  I.implies_from_sep (Sep.slprop_ref_pts_to r p) (Sep.pers (Sep.slprop_ref_pts_to r p));
+  implies_elim (Sep.slprop_ref_pts_to r p) (Sep.pers (Sep.slprop_ref_pts_to r p))
+
 let buy1 = A.buy1
 
 let pts_to_not_null #a #p r v = lift_neutral_ghost (A.pts_to_not_null #a #p r v)

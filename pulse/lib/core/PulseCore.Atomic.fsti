@@ -307,6 +307,21 @@ val later_elim (p:slprop)
 val implies_elim (p: slprop) (q: slprop { implies p q })
 : stt_ghost unit emp_inames p (fun _ -> q)
 
+val pers_dup_g (p: slprop)
+  : stt_ghost unit emp_inames (Sep.pers p) (fun _ -> Sep.star (Sep.pers p) (Sep.pers p))
+
+val pers_elim_g (p: slprop)
+  : stt_ghost unit emp_inames (Sep.pers p) (fun _ -> p)
+
+val pers_intro_pure_g (phi: prop)
+  : stt_ghost unit emp_inames (Sep.pure phi) (fun _ -> Sep.pers (Sep.pure phi))
+
+val pers_intro_inv_g (i: iref) (p: slprop)
+  : stt_ghost unit emp_inames (Sep.inv i p) (fun _ -> Sep.pers (Sep.inv i p))
+
+val pers_intro_slprop_ref_g (r: slprop_ref) (p: slprop)
+  : stt_ghost unit emp_inames (Sep.slprop_ref_pts_to r p) (fun _ -> Sep.pers (Sep.slprop_ref_pts_to r p))
+
 val buy1 ()
 : stt unit emp (fun _ -> later_credit 1)
 
