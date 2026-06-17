@@ -81,6 +81,32 @@ ghost fn aupd_unfold
        as (atomic_acc_pre is alpha beta phi (atomic_update is alpha beta phi))
 }
 
+ghost fn aupd_intro_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+    (p : slprop)
+  requires pers (trade p (atomic_acc_pre is alpha beta phi p)) ** p
+  ensures atomic_update_pers is alpha beta phi
+{
+  bi_gfp_pers_intro (atomic_acc_pre is alpha beta phi) p;
+  fold (atomic_update_pers is alpha beta phi)
+}
+
+ghost fn aupd_unfold_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+  requires atomic_update_pers is alpha beta phi
+  ensures atomic_acc_pre is alpha beta phi (atomic_update_pers is alpha beta phi)
+{
+  unfold (atomic_update_pers is alpha beta phi);
+  bi_gfp_pers_unfold (atomic_acc_pre is alpha beta phi)
+    #(mono_atomic_acc_pre is alpha beta phi);
+  rewrite (atomic_acc_pre is alpha beta phi (bi_gfp_pers (atomic_acc_pre is alpha beta phi)))
+       as (atomic_acc_pre is alpha beta phi (atomic_update_pers is alpha beta phi))
+}
+
 (***** Derived ops *****)
 
 ghost fn au_open
@@ -125,4 +151,48 @@ ghost fn au_abort
   opens is
 {
   elim_trade #is (alpha x) (atomic_update is alpha beta phi)
+}
+
+ghost fn au_open_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+  requires atomic_update_pers is alpha beta phi
+  returns x : erased a
+  ensures alpha x **
+          trade #is (alpha x) (atomic_update_pers is alpha beta phi) **
+          (forall* (y : b). trade #is (beta x y) (phi x y))
+{
+  aupd_unfold_pers is alpha beta phi;
+  unfold (atomic_acc_pre is alpha beta phi (atomic_update_pers is alpha beta phi));
+  with x. assert (
+    alpha x **
+    trade #is (alpha x) (atomic_update_pers is alpha beta phi) **
+    (forall* (y : b). trade #is (beta x y) (phi x y)));
+  hide x
+}
+
+ghost fn au_commit_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+    (x : a) (y : b)
+  requires beta x y ** (forall* (y' : b). trade #is (beta x y') (phi x y'))
+  ensures phi x y
+  opens is
+{
+  elim_forall #b #(fun y' -> trade #is (beta x y') (phi x y')) y;
+  elim_trade #is (beta x y) (phi x y)
+}
+
+ghost fn au_abort_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+    (x : a)
+  requires alpha x ** trade #is (alpha x) (atomic_update_pers is alpha beta phi)
+  ensures atomic_update_pers is alpha beta phi
+  opens is
+{
+  elim_trade #is (alpha x) (atomic_update_pers is alpha beta phi)
 }

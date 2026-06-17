@@ -38,6 +38,15 @@ let atomic_update
   : slprop
   = bi_gfp (atomic_acc_pre is alpha beta phi)
 
+let atomic_update_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop)
+    (beta : a -> b -> slprop)
+    (phi : a -> b -> slprop)
+  : slprop
+  = bi_gfp_pers (atomic_acc_pre is alpha beta phi)
+
 ghost fn aupd_intro
     (#a #b : Type0)
     (is : inames)
@@ -52,6 +61,21 @@ ghost fn aupd_unfold
     (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
   requires atomic_update is alpha beta phi
   ensures atomic_acc_pre is alpha beta phi (atomic_update is alpha beta phi)
+
+ghost fn aupd_intro_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+    (p : slprop)
+  requires pers (trade p (atomic_acc_pre is alpha beta phi p)) ** p
+  ensures atomic_update_pers is alpha beta phi
+
+ghost fn aupd_unfold_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+  requires atomic_update_pers is alpha beta phi
+  ensures atomic_acc_pre is alpha beta phi (atomic_update_pers is alpha beta phi)
 
 ghost fn au_open
     (#a #b : Type0)
@@ -79,4 +103,32 @@ ghost fn au_abort
     (x : a)
   requires alpha x ** trade #is (alpha x) (atomic_update is alpha beta phi)
   ensures atomic_update is alpha beta phi
+  opens is
+
+ghost fn au_open_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+  requires atomic_update_pers is alpha beta phi
+  returns x : erased a
+  ensures alpha x **
+          trade #is (alpha x) (atomic_update_pers is alpha beta phi) **
+          (forall* (y : b). trade #is (beta x y) (phi x y))
+
+ghost fn au_commit_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+    (x : a) (y : b)
+  requires beta x y ** (forall* (y' : b). trade #is (beta x y') (phi x y'))
+  ensures phi x y
+  opens is
+
+ghost fn au_abort_pers
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop) (beta : a -> b -> slprop) (phi : a -> b -> slprop)
+    (x : a)
+  requires alpha x ** trade #is (alpha x) (atomic_update_pers is alpha beta phi)
+  ensures atomic_update_pers is alpha beta phi
   opens is
