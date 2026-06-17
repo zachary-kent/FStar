@@ -289,19 +289,16 @@ let later_elim p = lift_neutral_ghost (A.later_elim p)
 let implies_elim p q = lift_neutral_ghost (A.implies_elim p q)
 
 let pers_dup_g p =
-  Sep.pers_dup p;
-  I.implies_from_sep (Sep.pers p) (Sep.star (Sep.pers p) (Sep.pers p));
-  implies_elim (Sep.pers p) (Sep.star (Sep.pers p) (Sep.pers p))
+  I.pers_dup p;
+  implies_elim (pers p) (pers p ** pers p)
 
 let pers_elim_g p =
-  Sep.pers_elim p;
-  I.implies_from_sep (Sep.pers p) p;
-  implies_elim (Sep.pers p) p
+  I.pers_elim p;
+  implies_elim (pers p) p
 
 let pers_intro_pure_g phi =
-  Sep.pers_pure phi;
-  I.implies_from_sep (Sep.pure phi) (Sep.pers (Sep.pure phi));
-  implies_elim (Sep.pure phi) (Sep.pers (Sep.pure phi))
+  I.pers_pure phi;
+  implies_elim (pure phi) (pers (pure phi))
 
 let pers_intro_inv_g i p =
   Sep.pers_intro_inv i p;

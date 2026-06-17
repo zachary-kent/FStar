@@ -207,6 +207,8 @@ val add_already_there (i:iname) (is:inames)
           (ensures add_inv is i == is)
           [SMTPat (add_inv is i)]
 
+val inv (i: iname) (p: slprop) : slprop
+
 (***** begin computation types and combinators *****)
 
 ////////////////////////////////////////////////////////////////////
@@ -540,6 +542,24 @@ val implies (p q : slprop) : prop
 val implies_elim (p : slprop) (q : slprop { implies p q })
   : stt_ghost unit emp_inames p (fun _ -> q)
 
+//////////////////////////////////////////////////////////////////////////
+// Persistence modality (Iris □)
+//////////////////////////////////////////////////////////////////////////
+
+val pers (p: slprop) : slprop
+
+val pers_dup (p: slprop)
+  : stt_ghost unit emp_inames (pers p) (fun _ -> pers p ** pers p)
+
+val pers_elim (p: slprop)
+  : stt_ghost unit emp_inames (pers p) (fun _ -> p)
+
+val pers_intro_pure (phi: prop)
+  : stt_ghost unit emp_inames (pure phi) (fun _ -> pers (pure phi))
+
+val pers_intro_inv (i: iname) (p: slprop)
+  : stt_ghost unit emp_inames (inv i p) (fun _ -> pers (inv i p))
+
 val later_star p q : squash (later (p ** q) == later p ** later q)
 val later_exists (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (later (exists* x. f x)) (fun _ -> exists* x. later (f x))
 val exists_later (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (exists* x. later (f x)) (fun _ -> later (exists* x. f x))
@@ -578,6 +598,9 @@ val slprop_ref : Type0
 val null_slprop_ref : slprop_ref
 
 val slprop_ref_pts_to ([@@@mkey]x: slprop_ref) (y: slprop) : slprop
+
+val pers_intro_slprop_ref (r: slprop_ref) (p: slprop)
+  : stt_ghost unit emp_inames (slprop_ref_pts_to r p) (fun _ -> pers (slprop_ref_pts_to r p))
 
 val on_slprop_ref_pts_to_eq l x y : squash (on l (slprop_ref_pts_to x y) == slprop_ref_pts_to x y)
 

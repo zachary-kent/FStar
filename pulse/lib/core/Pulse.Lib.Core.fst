@@ -136,6 +136,8 @@ let join_emp is =
 
 let add_already_there i is = GhostSet.lemma_equal_intro (add_inv is i) is
 
+let inv = PulseCore.Action.inv
+
 ////////////////////////////////////////////////////////////////////
 // stt a pre post: The main type of a pulse computation
 ////////////////////////////////////////////////////////////////////
@@ -230,6 +232,16 @@ let later_elim_timeless p = A.implies_elim (later p) p
 let implies = implies
 let implies_elim p q = A.implies_elim p q
 
+let pers = Sep.pers
+
+let pers_dup p = A.pers_dup_g p
+
+let pers_elim p = A.pers_elim_g p
+
+let pers_intro_pure phi = A.pers_intro_pure_g phi
+
+let pers_intro_inv i p = A.pers_intro_inv_g i p
+
 let later_star = Sep.later_star
 let later_exists #t f =
   let h: squash Sep.(later (exists* x. f x) `implies` exists* x. later (f x)) = Sep.later_exists #t f in
@@ -264,6 +276,7 @@ let later_equiv = Sep.later_equiv
 let slprop_ref = PulseCore.Action.slprop_ref
 let null_slprop_ref = PulseCore.Action.null_slprop_ref
 let slprop_ref_pts_to x y = PulseCore.Action.slprop_ref_pts_to x y
+let pers_intro_slprop_ref r p = A.pers_intro_slprop_ref_g r p
 let on_slprop_ref_pts_to_eq l x y = Sep.on_slprop_ref_pts_to_eq l x y
 let slprop_ref_alloc x = A.slprop_ref_alloc x
 let slprop_ref_share x #y = A.slprop_ref_share x y

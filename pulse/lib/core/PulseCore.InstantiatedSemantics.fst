@@ -58,6 +58,11 @@ let later_credit_add n m = later_credit_add n m
 let later_credit_zero () = later_credit_zero()
 let iref = iref
 let inv i p = inv i p
+let pers = Sep.pers
+let pers_dup p = Sep.pers_dup p
+let pers_elim p = Sep.pers_elim p
+let pers_pure phi = Sep.pers_pure phi
+let pers_intro_inv i p = Sep.pers_intro_inv i p
 
 let slprop_equiv p q = p == q
 
