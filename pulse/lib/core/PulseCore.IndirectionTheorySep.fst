@@ -1610,3 +1610,67 @@ let pers (p: slprop) : slprop =
   pers_hereditary p;
   pers_affine p;
   mk_slprop (pers_pred p)
+
+let pers_elim (p: slprop) : squash (pers p `implies` p) =
+  implies_intro (pers p) p fun m ->
+    core_le m;
+    reveal_slprop_ok ();
+    assert (p m)
+
+let pers_dup (p: slprop) : squash (pers p `implies` (pers p `star` pers p)) =
+  implies_intro (pers p) (pers p `star` pers p) fun m ->
+    core_id m;
+    core_idem m;
+    assert (pers p (core m));
+    star_intro (pers p) (pers p) m (core m) m
+
+let pers_idem (p: slprop) : squash (pers p == pers (pers p)) =
+  mem_pred_ext (pers p) (pers (pers p)) fun m ->
+    core_idem m
+
+let pers_mono (p q: slprop) (h: squash (p `implies` q)) : squash (pers p `implies` pers q) =
+  implies_intro (pers p) (pers q) fun m ->
+    level_core m;
+    assert (level_ (core m) > 0);
+    assert (p (core m));
+    assert (q (core m))
+
+let core_parts_of_core (m w1 w2: premem) :
+    Lemma (requires disjoint_mem w1 w2 /\ join_premem w1 w2 == core m)
+      (ensures core w1 == w1 /\ core w2 == w2) =
+  timeless_heap_of_core m;
+  credits_core m;
+  assert (credits_ w1 + credits_ w2 == 0);
+  assert (credits_ w1 == 0);
+  assert (credits_ w2 == 0);
+  H2.join_empty_inverse (timeless_heap_of w1) (timeless_heap_of w2);
+  assert (timeless_heap_of w1 == B.empty_mem);
+  assert (timeless_heap_of w2 == B.empty_mem);
+  mem_ext (core w1) w1 (fun a -> read_core w1 a);
+  mem_ext (core w2) w2 (fun a -> read_core w2 a)
+
+let pers_star (p q: slprop) : squash (pers (p `star` q) `implies` (pers p `star` pers q)) =
+  implies_intro (pers (p `star` q)) (pers p `star` pers q) fun m ->
+    let (w1, w2) = star_elim p q (core m) in
+    core_parts_of_core m w1 w2;
+    assert (pers p w1);
+    assert (pers q w2);
+    star_intro (pers p) (pers q) (core m) w1 w2;
+    assert ((pers p `star` pers q) (core m));
+    core_le m;
+    reveal_slprop_ok ();
+    assert ((pers p `star` pers q) m)
+
+let pers_emp () : squash (emp `implies` pers emp) =
+  implies_intro emp (pers emp) fun _ -> ()
+
+let pers_pure (phi: prop) : squash (pure phi `implies` pers (pure phi)) =
+  implies_intro (pure phi) (pers (pure phi)) fun _ -> ()
+
+let pers_later (p: slprop) : squash (pers (later p) == later (pers p)) =
+  mem_pred_ext (pers (later p)) (later (pers p)) fun m ->
+    core_age1 m;
+    level_core m
+
+let pers_exists (#a: Type u#a) (f: a -> slprop) : squash (pers (exists* x. f x) == (exists* x. pers (f x))) =
+  mem_pred_ext (pers (exists* x. f x)) (exists* x. pers (f x)) fun _ -> ()

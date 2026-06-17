@@ -538,3 +538,12 @@ val core_le : m:premem -> Lemma (mem_le (core m) m)
 
 (**** Persistence modality, IGU §5.3 *)
 val pers : slprop -> slprop
+val pers_elim (p: slprop) : squash (pers p `implies` p)
+val pers_dup (p: slprop) : squash (pers p `implies` (pers p `star` pers p))
+val pers_idem (p: slprop) : squash (pers p == pers (pers p))
+val pers_mono (p q: slprop) (h: squash (p `implies` q)) : squash (pers p `implies` pers q)
+val pers_star (p q: slprop) : squash (pers (p `star` q) `implies` (pers p `star` pers q))
+val pers_emp () : squash (emp `implies` pers emp)
+val pers_pure (phi: prop) : squash (pure phi `implies` pers (pure phi))
+val pers_later (p: slprop) : squash (pers (later p) == later (pers p))
+val pers_exists (#a: Type u#a) (f: a -> slprop) : squash (pers (exists* x. f x) == (exists* x. pers (f x)))
