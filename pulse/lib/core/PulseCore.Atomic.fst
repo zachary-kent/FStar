@@ -305,6 +305,11 @@ let pers_intro_inv_g i p =
   I.implies_from_sep (Sep.inv i p) (Sep.pers (Sep.inv i p));
   implies_elim (Sep.inv i p) (Sep.pers (Sep.inv i p))
 
+let pers_intro_star_g p q =
+  Sep.pers_intro_star p q;
+  I.implies_from_sep (Sep.star (Sep.pers p) (Sep.pers q)) (Sep.pers (Sep.star p q));
+  implies_elim (Sep.star (Sep.pers p) (Sep.pers q)) (Sep.pers (Sep.star p q))
+
 let pers_intro_slprop_ref_g r p =
   Sep.pers_intro_slprop_ref r p;
   I.implies_from_sep (Sep.slprop_ref_pts_to r p) (Sep.pers (Sep.slprop_ref_pts_to r p));

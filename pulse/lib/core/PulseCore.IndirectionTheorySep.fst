@@ -1661,6 +1661,13 @@ let pers_star (p q: slprop) : squash (pers (p `star` q) `implies` (pers p `star`
     reveal_slprop_ok ();
     assert ((pers p `star` pers q) m)
 
+let pers_intro_star (p q: slprop) : squash ((pers p `star` pers q) `implies` pers (p `star` q)) =
+  implies_intro (pers p `star` pers q) (pers (p `star` q)) fun m ->
+    let (w1, w2) = star_elim (pers p) (pers q) m in
+    core_dist w1 w2;
+    assert (core m == join_premem (core w1) (core w2));
+    star_intro p q (core m) (core w1) (core w2)
+
 let pers_emp () : squash (emp `implies` pers emp) =
   implies_intro emp (pers emp) fun _ -> ()
 

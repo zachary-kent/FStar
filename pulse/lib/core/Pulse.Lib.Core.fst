@@ -242,6 +242,8 @@ let pers_intro_pure phi = A.pers_intro_pure_g phi
 
 let pers_intro_inv i p = A.pers_intro_inv_g i p
 
+let pers_intro_star p q = A.pers_intro_star_g p q
+
 let later_star = Sep.later_star
 let later_exists #t f =
   let h: squash Sep.(later (exists* x. f x) `implies` exists* x. later (f x)) = Sep.later_exists #t f in

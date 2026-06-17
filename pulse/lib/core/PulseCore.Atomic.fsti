@@ -319,6 +319,9 @@ val pers_intro_pure_g (phi: prop)
 val pers_intro_inv_g (i: iref) (p: slprop)
   : stt_ghost unit emp_inames (Sep.inv i p) (fun _ -> Sep.pers (Sep.inv i p))
 
+val pers_intro_star_g (p q: slprop)
+  : stt_ghost unit emp_inames (Sep.star (Sep.pers p) (Sep.pers q)) (fun _ -> Sep.pers (Sep.star p q))
+
 val pers_intro_slprop_ref_g (r: slprop_ref) (p: slprop)
   : stt_ghost unit emp_inames (Sep.slprop_ref_pts_to r p) (fun _ -> Sep.pers (Sep.slprop_ref_pts_to r p))
 
