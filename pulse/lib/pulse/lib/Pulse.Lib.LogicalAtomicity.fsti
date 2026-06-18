@@ -192,8 +192,16 @@ ghost fn au_abort (#is:inames) (#a:Type0) (#b:Type0)
 
 (** Commit: provide β(x,y), get Φ(x,y). Uses stored trade — NO external cfn.
     Iris commit branch (line 25-27): ∀y. β(x,y) ={Ei,Eo}=∗ Φ(x,y).
-    Gap: trade is same-mask (@==> with emp_inames), not mask-changing ={Ei,Eo}=∗.
-    Iris commit can open invariants during the fancy update; ours cannot.
+    Pulse note: the stored trade has fixed mask `is`, set at AU construction.
+    To open additional invariants (e.g.\ commit/abort an outer AU) inside the
+    inner trade body, construct the AU with `is` widened to include those
+    invariant names — e.g.\ `add_inv is (au_iname outer_tok)` for nested AUs.
+    See `PulseTutorial.CASviaCAS.fst` (faa_via_cas_lat) for the nested-LAT
+    pattern; the inner CAS AU is allocated at `add_inv is (au_iname outer)`,
+    so the inner commit/abort trade body can call `au_abort outer` inline.
+    What stays missing: a fully Iris-style mask-changing fupd reified as an
+    arbitrary slprop (Reading 3 / fupd is_pre is_post P) usable for helping
+    protocols where the trade-firing context cannot pre-declare the union.
     Faithfully captured: protocol shape (β in, Φ out, AU consumed). *)
 ghost fn au_commit (#is:inames) (#a:Type0) (#b:Type0)
     (#alpha : a -> slprop) (#beta : a -> b -> slprop) (#phi : a -> b -> slprop)

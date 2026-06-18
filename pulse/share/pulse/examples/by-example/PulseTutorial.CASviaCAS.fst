@@ -189,7 +189,7 @@ let inner_phi
     (x : erased U32.t)
     (b : bool)
   : slprop =
-  if b then phi old_n else cell_val c.cg (reveal x) ** au_opened tok (reveal x)
+  if b then phi old_n else au_available tok
 
 (** Given the opened outer FAA AU, build the true-branch inner CAS commit
     continuation.  The returned trade is stored in the inner CAS AU; firing it
@@ -203,11 +203,11 @@ ghost fn true_trade_from_opened (c : atomic_cell) (delta old_n : U32.t)
       (fun _ old -> phi old))
     (x : erased U32.t)
   requires au_opened tok (reveal x)
-  ensures trade #is
+  ensures trade #(add_inv is (au_iname tok))
     (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
     (phi old_n)
 {
-  intro_trade #is
+  intro_trade #(add_inv is (au_iname tok))
     (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
     (phi old_n)
     (au_opened tok (reveal x))
@@ -222,9 +222,9 @@ ghost fn true_trade_from_opened (c : atomic_cell) (delta old_n : U32.t)
 }
 
 (** Given the opened outer FAA AU, build the false-branch inner CAS commit
-    continuation.  Firing it returns the outer AU's opened state to the FAA
-    loop; the loop then aborts the outer AU and retries outside the inner
-    commit trade, where opening [au_iname tok] is permitted. *)
+    continuation.  The inner trade is fired at the widened mask containing
+    [au_iname tok], so it can abort the outer AU inline and return the
+    available outer AU to the retry loop. *)
 ghost fn false_trade_from_opened (c : atomic_cell) (delta old_n : U32.t)
     (#is : inames)
     (phi : U32.t -> slprop)
@@ -234,19 +234,19 @@ ghost fn false_trade_from_opened (c : atomic_cell) (delta old_n : U32.t)
       (fun _ old -> phi old))
     (x : erased U32.t)
   requires au_opened tok (reveal x)
-  ensures trade #is
+  ensures trade #(add_inv is (au_iname tok))
     (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-    (cell_val c.cg (reveal x) ** au_opened tok (reveal x))
+    (au_available tok)
 {
-  intro_trade #is
+  intro_trade #(add_inv is (au_iname tok))
     (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-    (cell_val c.cg (reveal x) ** au_opened tok (reveal x))
+    (au_available tok)
     (au_opened tok (reveal x))
     fn _ {
       unfold cas_commit_hyp;
       unfold cas_beta;
-      drop_ (later_credit 1);
-      drop_ (pure (~ (reveal x == old_n)))
+      drop_ (pure (~ (reveal x == old_n)));
+      au_abort tok x
     }
 }
 
@@ -264,13 +264,13 @@ ghost fn pers_true_factory (c : atomic_cell) (delta old_n : U32.t)
   requires emp
   ensures pers (trade
     (au_opened tok (reveal x))
-    (trade #is
+    (trade #(add_inv is (au_iname tok))
       (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
       (phi old_n)))
 {
   Pulse.Lib.Trade.pers_intro_trade
     (au_opened tok (reveal x))
-    (trade #is
+    (trade #(add_inv is (au_iname tok))
       (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
       (phi old_n))
     fn _ {
@@ -290,15 +290,15 @@ ghost fn pers_false_factory (c : atomic_cell) (delta old_n : U32.t)
   requires emp
   ensures pers (trade
     (au_opened tok (reveal x))
-    (trade #is
+    (trade #(add_inv is (au_iname tok))
       (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-      (cell_val c.cg (reveal x) ** au_opened tok (reveal x))))
+      (au_available tok)))
 {
   Pulse.Lib.Trade.pers_intro_trade
     (au_opened tok (reveal x))
-    (trade #is
+    (trade #(add_inv is (au_iname tok))
       (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-      (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))
+      (au_available tok))
     fn _ {
       false_trade_from_opened c delta old_n phi tok x
     }
@@ -316,76 +316,76 @@ ghost fn build_inner_cas_forall (c : atomic_cell) (delta old_n : U32.t)
     au_opened tok (reveal x) **
     pers (trade
       (au_opened tok (reveal x))
-      (trade #is
+      (trade #(add_inv is (au_iname tok))
         (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
         (phi old_n))) **
     pers (trade
       (au_opened tok (reveal x))
-      (trade #is
+      (trade #(add_inv is (au_iname tok))
         (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-        (cell_val c.cg (reveal x) ** au_opened tok (reveal x))))
-  ensures forall* (b : bool). trade #is
+        (au_available tok)))
+  ensures forall* (b : bool). trade #(add_inv is (au_iname tok))
     (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) b)
     (inner_phi c delta old_n phi tok x b)
 {
   intro_forall #bool
-    #(fun b -> trade #is
+    #(fun b -> trade #(add_inv is (au_iname tok))
       (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) b)
       (inner_phi c delta old_n phi tok x b))
     (au_opened tok (reveal x) **
       pers (trade
         (au_opened tok (reveal x))
-        (trade #is
+        (trade #(add_inv is (au_iname tok))
           (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
           (phi old_n))) **
       pers (trade
         (au_opened tok (reveal x))
-        (trade #is
+        (trade #(add_inv is (au_iname tok))
           (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-          (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))))
+          (au_available tok))))
     fn b {
       if b {
         pers_elim (trade
           (au_opened tok (reveal x))
-          (trade #is
+          (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
             (phi old_n)));
         elim_trade #emp_inames
           (au_opened tok (reveal x))
-          (trade #is
+          (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
             (phi old_n));
-        rewrite (trade #is
+        rewrite (trade #(add_inv is (au_iname tok))
           (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
           (phi old_n))
-          as (trade #is
+          as (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
             (inner_phi c delta old_n phi tok x true));
         drop_ (pers (trade
           (au_opened tok (reveal x))
-          (trade #is
+          (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-            (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))))
+            (au_available tok))))
       } else {
         pers_elim (trade
           (au_opened tok (reveal x))
-          (trade #is
+          (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-            (cell_val c.cg (reveal x) ** au_opened tok (reveal x))));
+            (au_available tok)));
         elim_trade #emp_inames
           (au_opened tok (reveal x))
-          (trade #is
+          (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-            (cell_val c.cg (reveal x) ** au_opened tok (reveal x)));
-        rewrite (trade #is
+            (au_available tok));
+        rewrite (trade #(add_inv is (au_iname tok))
           (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
-          (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))
-          as (trade #is
+          (au_available tok))
+          as (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
             (inner_phi c delta old_n phi tok x false));
         drop_ (pers (trade
           (au_opened tok (reveal x))
-          (trade #is
+          (trade #(add_inv is (au_iname tok))
             (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
             (phi old_n))))
       }
@@ -436,20 +436,19 @@ fn rec faa_via_cas_lat (c : atomic_cell) (delta : U32.t)
   build_inner_cas_forall c delta old_n phi tok x;
 
   let inner_tok = au_intro
-    #is #U32.t #bool
+    #(add_inv is (au_iname tok)) #U32.t #bool
     #(fun n -> cell_val c.cg n)
     #(cas_beta c old_n (U32.add_mod old_n delta))
     #(fun _ b -> inner_phi c delta old_n phi tok x b)
     x;
 
-  let b = cas_lat c old_n (U32.add_mod old_n delta) (fun b -> inner_phi c delta old_n phi tok x b) inner_tok ();
+  let b = cas_lat c old_n (U32.add_mod old_n delta) #(add_inv is (au_iname tok))
+    (fun b -> inner_phi c delta old_n phi tok x b) inner_tok ();
   if b {
     unfold (inner_phi c delta old_n phi tok x true);
     old_n
   } else {
     unfold (inner_phi c delta old_n phi tok x false);
-    later_credit_buy 1;
-    au_abort tok x;
     faa_via_cas_lat c delta phi tok ()
   }
 }
