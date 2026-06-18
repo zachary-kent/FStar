@@ -10,6 +10,7 @@ module PulseTutorial.CASviaCAS
 open Pulse.Lib.Pervasives
 open Pulse.Lib.LogicalAtomicity
 open Pulse.Lib.Primitives
+open Pulse.Lib.Trade
 module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
@@ -164,3 +165,298 @@ let cas_lat (c : atomic_cell) (old_n new_n : U32.t) (#is : inames)
       (cas_beta c old_n new_n)
       (is_cell c)
   = cas_lat_impl c old_n new_n
+
+(* ================================================================ *)
+(* FAA via nested CAS LAT                                           *)
+(* ================================================================ *)
+
+let faa_beta (c : atomic_cell) (delta : U32.t) (n old : U32.t) : slprop =
+  cell_val c.cg (U32.add_mod n delta) ** pure (old == n)
+
+unfold
+let cas_commit_hyp (c : atomic_cell) (old_n new_n : U32.t) (n : U32.t) (b : bool) : slprop =
+  later_credit 1 ** cas_beta c old_n new_n n b
+
+let inner_phi
+    (#is : inames)
+    (c : atomic_cell)
+    (delta old_n : U32.t)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (x : erased U32.t)
+    (b : bool)
+  : slprop =
+  if b then phi old_n else cell_val c.cg (reveal x) ** au_opened tok (reveal x)
+
+(** Given the opened outer FAA AU, build the true-branch inner CAS commit
+    continuation.  The returned trade is stored in the inner CAS AU; firing it
+    converts CAS-success β into the outer FAA β and commits the outer AU. *)
+ghost fn true_trade_from_opened (c : atomic_cell) (delta old_n : U32.t)
+    (#is : inames)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (x : erased U32.t)
+  requires au_opened tok (reveal x)
+  ensures trade #is
+    (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+    (phi old_n)
+{
+  intro_trade #is
+    (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+    (phi old_n)
+    (au_opened tok (reveal x))
+    fn _ {
+      unfold cas_commit_hyp;
+      unfold cas_beta;
+      rewrite (cell_val c.cg (U32.add_mod old_n delta))
+        as (cell_val c.cg (U32.add_mod (reveal x) delta));
+      fold (faa_beta c delta (reveal x) old_n);
+      au_commit tok (reveal x) old_n
+    }
+}
+
+(** Given the opened outer FAA AU, build the false-branch inner CAS commit
+    continuation.  Firing it returns the outer AU's opened state to the FAA
+    loop; the loop then aborts the outer AU and retries outside the inner
+    commit trade, where opening [au_iname tok] is permitted. *)
+ghost fn false_trade_from_opened (c : atomic_cell) (delta old_n : U32.t)
+    (#is : inames)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (x : erased U32.t)
+  requires au_opened tok (reveal x)
+  ensures trade #is
+    (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+    (cell_val c.cg (reveal x) ** au_opened tok (reveal x))
+{
+  intro_trade #is
+    (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+    (cell_val c.cg (reveal x) ** au_opened tok (reveal x))
+    (au_opened tok (reveal x))
+    fn _ {
+      unfold cas_commit_hyp;
+      unfold cas_beta;
+      drop_ (later_credit 1);
+      drop_ (pure (~ (reveal x == old_n)))
+    }
+}
+
+(** Persistent factory for the true branch.  The persistent trade is closed:
+    it takes the outer opened handle as its hypothesis rather than capturing it
+    linearly. *)
+ghost fn pers_true_factory (c : atomic_cell) (delta old_n : U32.t)
+    (#is : inames)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (x : erased U32.t)
+  requires emp
+  ensures pers (trade
+    (au_opened tok (reveal x))
+    (trade #is
+      (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+      (phi old_n)))
+{
+  Pulse.Lib.Trade.pers_intro_trade
+    (au_opened tok (reveal x))
+    (trade #is
+      (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+      (phi old_n))
+    fn _ {
+      true_trade_from_opened c delta old_n phi tok x
+    }
+}
+
+(** Persistent factory for the false branch. *)
+ghost fn pers_false_factory (c : atomic_cell) (delta old_n : U32.t)
+    (#is : inames)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (x : erased U32.t)
+  requires emp
+  ensures pers (trade
+    (au_opened tok (reveal x))
+    (trade #is
+      (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+      (cell_val c.cg (reveal x) ** au_opened tok (reveal x))))
+{
+  Pulse.Lib.Trade.pers_intro_trade
+    (au_opened tok (reveal x))
+    (trade #is
+      (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+      (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))
+    fn _ {
+      false_trade_from_opened c delta old_n phi tok x
+    }
+}
+
+ghost fn build_inner_cas_forall (c : atomic_cell) (delta old_n : U32.t)
+    (#is : inames)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (x : erased U32.t)
+  requires
+    au_opened tok (reveal x) **
+    pers (trade
+      (au_opened tok (reveal x))
+      (trade #is
+        (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+        (phi old_n))) **
+    pers (trade
+      (au_opened tok (reveal x))
+      (trade #is
+        (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+        (cell_val c.cg (reveal x) ** au_opened tok (reveal x))))
+  ensures forall* (b : bool). trade #is
+    (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) b)
+    (inner_phi c delta old_n phi tok x b)
+{
+  intro_forall #bool
+    #(fun b -> trade #is
+      (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) b)
+      (inner_phi c delta old_n phi tok x b))
+    (au_opened tok (reveal x) **
+      pers (trade
+        (au_opened tok (reveal x))
+        (trade #is
+          (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+          (phi old_n))) **
+      pers (trade
+        (au_opened tok (reveal x))
+        (trade #is
+          (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+          (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))))
+    fn b {
+      if b {
+        pers_elim (trade
+          (au_opened tok (reveal x))
+          (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+            (phi old_n)));
+        elim_trade #emp_inames
+          (au_opened tok (reveal x))
+          (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+            (phi old_n));
+        rewrite (trade #is
+          (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+          (phi old_n))
+          as (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+            (inner_phi c delta old_n phi tok x true));
+        drop_ (pers (trade
+          (au_opened tok (reveal x))
+          (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+            (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))))
+      } else {
+        pers_elim (trade
+          (au_opened tok (reveal x))
+          (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+            (cell_val c.cg (reveal x) ** au_opened tok (reveal x))));
+        elim_trade #emp_inames
+          (au_opened tok (reveal x))
+          (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+            (cell_val c.cg (reveal x) ** au_opened tok (reveal x)));
+        rewrite (trade #is
+          (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+          (cell_val c.cg (reveal x) ** au_opened tok (reveal x)))
+          as (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) false)
+            (inner_phi c delta old_n phi tok x false));
+        drop_ (pers (trade
+          (au_opened tok (reveal x))
+          (trade #is
+            (cas_commit_hyp c old_n (U32.add_mod old_n delta) (reveal x) true)
+            (phi old_n))))
+      }
+    }
+}
+
+fn read_cell (c : atomic_cell)
+  requires is_cell c
+  returns v : U32.t
+  ensures is_cell c
+{
+  unfold is_cell;
+  let v = with_invariants U32.t emp_inames c.ci (cell_inv c)
+    emp (fun _ -> emp)
+  fn _ {
+    unfold cell_inv; unfold cell_inv_inner;
+    let v = read_atomic_box c.loc;
+    fold (cell_inv_inner c.loc c.cg.gr); fold (cell_inv c);
+    v
+  };
+  fold (is_cell c);
+  v
+}
+
+fn rec faa_via_cas_lat (c : atomic_cell) (delta : U32.t)
+    (#is : inames)
+    (phi : U32.t -> slprop)
+    (tok : au_token is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (fun _ old -> phi old))
+    (_u : unit)
+  requires is_cell c ** au_available tok
+  returns old : U32.t
+  ensures is_cell c ** phi old
+{
+  let old_n = read_cell c;
+
+  // Open the outer FAA AU once for this CAS attempt.
+  later_credit_buy 1;
+  let x = au_open tok;
+
+  // Package the opened outer AU into the inner CAS AU.  The persistent
+  // factories are closed wands; the linear opened handle is supplied only as
+  // the hypothesis when the selected boolean branch is materialized.
+  pers_true_factory c delta old_n phi tok x;
+  pers_false_factory c delta old_n phi tok x;
+  build_inner_cas_forall c delta old_n phi tok x;
+
+  let inner_tok = au_intro
+    #is #U32.t #bool
+    #(fun n -> cell_val c.cg n)
+    #(cas_beta c old_n (U32.add_mod old_n delta))
+    #(fun _ b -> inner_phi c delta old_n phi tok x b)
+    x;
+
+  let b = cas_lat c old_n (U32.add_mod old_n delta) (fun b -> inner_phi c delta old_n phi tok x b) inner_tok ();
+  if b {
+    unfold (inner_phi c delta old_n phi tok x true);
+    old_n
+  } else {
+    unfold (inner_phi c delta old_n phi tok x false);
+    later_credit_buy 1;
+    au_abort tok x;
+    faa_via_cas_lat c delta phi tok ()
+  }
+}
+
+let faa_via_cas_lat_is_lat (c : atomic_cell) (delta : U32.t) (#is : inames)
+  : lat is U32.t U32.t
+      (fun n -> cell_val c.cg n)
+      (faa_beta c delta)
+      (is_cell c)
+  = faa_via_cas_lat c delta
