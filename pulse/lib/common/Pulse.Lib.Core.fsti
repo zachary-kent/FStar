@@ -579,6 +579,12 @@ let trade_elim_t is hyp extra concl : Type u#5 =
 let trade_elim_exists (is : inames) (hyp extra concl : slprop) : slprop =
   pure (FStar.Nonempty.nonempty (trade_elim_t is hyp extra concl))
 
+(* The trade encoding below is intentionally transparent in this interface
+   so that intro_trade/elim_trade in Pulse.Lib.Trade can fold/unfold it
+   without requiring the trade interface to be relocated to this module.
+   Soundness does not depend on opacity: pers_intro_trade introduces
+   persistence only for the extra = emp witness (audit AUDIT3.md F-301,
+   OQ-1 — verified non-exploitable by attack 4). *)
 unfold
 let trade
   (#[T.exact (`emp_inames)] is : inames)
