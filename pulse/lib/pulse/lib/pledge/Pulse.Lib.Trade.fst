@@ -21,13 +21,13 @@ open Pulse.Lib.Pervasives
 open FStar.Nonempty
 
 let trade_elim_t is hyp extra concl : Type u#5 =
-  unit -> trade_f #is hyp #extra concl
+  Pulse.Lib.Core.trade_elim_t is hyp extra concl
 
 let trade_elim_exists (is:inames) (hyp extra concl:slprop) : slprop =
-  pure (nonempty (trade_elim_t is hyp extra concl))
+  Pulse.Lib.Core.trade_elim_exists is hyp extra concl
 
 let trade (#is:inames) (hyp concl:slprop) =
-  exists* extra. extra ** trade_elim_exists is hyp extra concl
+  Pulse.Lib.Core.trade #is hyp concl
 
 let trade_emp_of_hyp
   (hyp concl : slprop)
@@ -51,9 +51,11 @@ fn intro_trade
   ensures trade #is hyp concl
 {
   nonempty_intro (f_elim <: trade_elim_t is hyp extra concl);
-  fold (trade_elim_exists is hyp extra concl);
-  assert (extra ** trade_elim_exists is hyp extra concl);
-  fold (trade #is hyp concl)
+  intro_pure (nonempty (trade_elim_t is hyp extra concl)) ();
+  rewrite (pure (nonempty (trade_elim_t is hyp extra concl))) as (Pulse.Lib.Core.trade_elim_exists is hyp extra concl);
+  assert (extra ** Pulse.Lib.Core.trade_elim_exists is hyp extra concl);
+  fold (Pulse.Lib.Core.trade #is hyp concl);
+  rewrite (Pulse.Lib.Core.trade #is hyp concl) as (trade #is hyp concl)
 }
 
 ghost
@@ -63,14 +65,7 @@ fn pers_intro_trade
   requires emp
   ensures pers (trade #emp_inames hyp concl)
 {
-  nonempty_intro (trade_emp_of_hyp hyp concl f_elim <: trade_elim_t emp_inames hyp emp concl);
-  intro_pure (nonempty (trade_elim_t emp_inames hyp emp concl)) ();
-  pers_intro_pure (nonempty (trade_elim_t emp_inames hyp emp concl));
-  pers_intro_emp ();
-  pers_intro_star emp (trade_elim_exists emp_inames hyp emp concl);
-  pers_intro_exists (fun extra -> extra ** trade_elim_exists emp_inames hyp extra concl) emp;
-  rewrite (pers (exists* (extra:slprop). extra ** trade_elim_exists emp_inames hyp extra concl))
-       as (pers (trade #emp_inames hyp concl))
+  Pulse.Lib.Core.pers_intro_trade hyp concl f_elim
 }
 
 fn introducable_trade_aux u#a (t: Type u#a) is is'
@@ -98,8 +93,8 @@ fn deconstruct_trade (is:inames) (hyp concl: slprop)
   ensures reveal (dfst res)
 {
   unfold (trade #is hyp concl);
-  with extra. assert (extra ** trade_elim_exists is hyp extra concl);
-  unfold (trade_elim_exists is hyp (reveal extra) concl);
+  with extra. assert (extra ** Pulse.Lib.Core.trade_elim_exists is hyp extra concl);
+  unfold (Pulse.Lib.Core.trade_elim_exists is hyp (reveal extra) concl);
   let f = nonempty_elim (trade_elim_t is hyp (reveal extra) concl);
   let res =
     (| (extra <: erased slprop), f |) <: (p:erased slprop & trade_elim_t is hyp (reveal p) concl);

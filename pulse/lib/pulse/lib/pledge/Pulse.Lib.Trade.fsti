@@ -24,7 +24,7 @@ module T = FStar.Tactics
 
 [@@erasable]
 let trade_f (#[T.exact (`emp_inames)] is: inames) (hyp: slprop) (#[T.exact (`emp)] extra: slprop) (concl: slprop) =
-  stt_ghost unit is (requires extra ** hyp) (ensures fun _ -> concl)
+  Pulse.Lib.Core.trade_f #is hyp #extra concl
 
 val trade
   (#[T.exact (`emp_inames)] is:inames)

@@ -251,6 +251,55 @@ let pers_intro_exists #a p e =
     (A.intro_exists (fun x -> pers (p x)) e)
     (fun _ -> rewrite_eq (exists* x. pers (p x)) (pers (exists* x. p x)) (Sep.pers_exists_sym p))
 
+let pers_intro_emp_and_pure (phi : prop) (pf : squash phi)
+  : stt_ghost unit emp_inames emp (fun _ -> pers emp ** pers (pure phi)) =
+  let e_pure : stt_ghost unit emp_inames emp (fun _ -> pers (pure phi)) =
+    A.bind_ghost (A.intro_pure phi pf) (fun _ -> A.pers_intro_pure_g phi) in
+  let e_pure_keep_emp : stt_ghost unit emp_inames emp (fun _ -> pers (pure phi) ** emp) =
+    sub_ghost
+      #unit #emp_inames #(emp ** emp) emp
+      #(fun _ -> pers (pure phi) ** emp) (fun _ -> pers (pure phi) ** emp)
+      (slprop_equiv_unit emp)
+      (intro_slprop_post_equiv
+        (fun _ -> pers (pure phi) ** emp)
+        (fun _ -> pers (pure phi) ** emp)
+        (fun _ -> slprop_equiv_refl (pers (pure phi) ** emp)))
+      (frame_ghost emp e_pure) in
+  let e_emp_with_pure : stt_ghost unit emp_inames (pers (pure phi) ** emp) (fun _ -> pers emp ** pers (pure phi)) =
+    sub_ghost
+      #unit #emp_inames #(emp ** pers (pure phi)) (pers (pure phi) ** emp)
+      #(fun _ -> pers emp ** pers (pure phi)) (fun _ -> pers emp ** pers (pure phi))
+      (slprop_equiv_comm emp (pers (pure phi)))
+      (intro_slprop_post_equiv
+        (fun _ -> pers emp ** pers (pure phi))
+        (fun _ -> pers emp ** pers (pure phi))
+        (fun _ -> slprop_equiv_refl (pers emp ** pers (pure phi))))
+      (frame_ghost (pers (pure phi)) (A.pers_intro_emp_g ())) in
+  A.bind_ghost e_pure_keep_emp (fun _ -> e_emp_with_pure)
+
+let trade_emp_of_hyp
+  (hyp concl : slprop)
+  (f_elim : unit -> stt_ghost unit emp_inames hyp (fun _ -> concl))
+  (_ : unit)
+  : trade_f #emp_inames hyp #emp concl =
+  sub_ghost
+    #unit #emp_inames #hyp (emp ** hyp)
+    #(fun _ -> concl) (fun _ -> concl)
+    (slprop_equiv_sym (emp ** hyp) hyp (slprop_equiv_unit hyp))
+    (intro_slprop_post_equiv (fun _ -> concl) (fun _ -> concl) (fun _ -> slprop_equiv_refl concl))
+    (f_elim ())
+
+let pers_intro_trade hyp concl f_elim =
+  let phi = FStar.Nonempty.nonempty (trade_elim_t emp_inames hyp emp concl) in
+  let pf = FStar.Nonempty.nonempty_intro (trade_emp_of_hyp hyp concl f_elim <: trade_elim_t emp_inames hyp emp concl) in
+  A.bind_ghost
+    (pers_intro_emp_and_pure phi pf)
+    (fun _ ->
+      A.bind_ghost
+        (pers_intro_star emp (trade_elim_exists emp_inames hyp emp concl))
+        (fun _ ->
+          pers_intro_exists (fun extra -> extra ** trade_elim_exists emp_inames hyp extra concl) emp))
+
 let later_star = Sep.later_star
 let later_exists #t f =
   let h: squash Sep.(later (exists* x. f x) `implies` exists* x. later (f x)) = Sep.later_exists #t f in

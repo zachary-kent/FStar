@@ -569,6 +569,29 @@ val pers_intro_star (p q: slprop)
 val pers_intro_exists (#a: Type) (p: a -> slprop) (e: a)
   : stt_ghost unit emp_inames (pers (p e)) (fun _ -> pers (exists* x. p x))
 
+[@@erasable]
+let trade_f (#[T.exact (`emp_inames)] is : inames) (hyp : slprop) (#[T.exact (`emp)] extra : slprop) (concl : slprop) =
+  stt_ghost unit is (requires extra ** hyp) (ensures fun _ -> concl)
+
+let trade_elim_t is hyp extra concl : Type u#5 =
+  unit -> trade_f #is hyp #extra concl
+
+let trade_elim_exists (is : inames) (hyp extra concl : slprop) : slprop =
+  pure (FStar.Nonempty.nonempty (trade_elim_t is hyp extra concl))
+
+unfold
+let trade
+  (#[T.exact (`emp_inames)] is : inames)
+  ([@@@mkey] hyp : slprop)
+  ([@@@mkey] concl : slprop)
+  : slprop
+  = exists* extra. extra ** trade_elim_exists is hyp extra concl
+
+val pers_intro_trade
+  (hyp concl : slprop)
+  (f_elim : unit -> stt_ghost unit emp_inames hyp (fun _ -> concl))
+  : stt_ghost unit emp_inames emp (fun _ -> pers (trade #emp_inames hyp concl))
+
 val later_star p q : squash (later (p ** q) == later p ** later q)
 val later_exists (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (later (exists* x. f x)) (fun _ -> exists* x. later (f x))
 val exists_later (#t: Type) (f:t->slprop) : stt_ghost unit emp_inames (exists* x. later (f x)) (fun _ -> later (exists* x. f x))
