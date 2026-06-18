@@ -25,6 +25,22 @@ let atomic_acc_pre
       trade #is (alpha x) p **
       (forall* (y : b). trade #is (beta x y) (phi x y))
 
+ghost fn atomic_acc_pre_intro
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop)
+    (beta : a -> b -> slprop)
+    (phi : a -> b -> slprop)
+    (p : slprop)
+    (x : a)
+  requires alpha x **
+          trade #is (alpha x) p **
+          (forall* (y : b). trade #is (beta x y) (phi x y))
+  ensures atomic_acc_pre is alpha beta phi p
+{
+  fold (atomic_acc_pre is alpha beta phi p)
+}
+
 let call #t #is #req #ens (h: unit -> stt_ghost is t req (fun x -> ens x)) = h
 
 (** Monotonicity: lift [atomic_acc_pre is _ p] to [atomic_acc_pre is _ q]

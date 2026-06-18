@@ -21,6 +21,19 @@ val atomic_acc_pre
     (p : slprop)
   : slprop
 
+ghost fn atomic_acc_pre_intro
+    (#a #b : Type0)
+    (is : inames)
+    (alpha : a -> slprop)
+    (beta : a -> b -> slprop)
+    (phi : a -> b -> slprop)
+    (p : slprop)
+    (x : a)
+  requires alpha x **
+          trade #is (alpha x) p **
+          (forall* (y : b). trade #is (beta x y) (phi x y))
+  ensures atomic_acc_pre is alpha beta phi p
+
 instance val mono_atomic_acc_pre
     (#a #b : Type0)
     (is : inames)
