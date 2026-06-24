@@ -1351,3 +1351,417 @@ let write_is_lat (#gh:gname val_t) (n:SZ.t) (v:big_atomic) (src:array val_t)
       (fun _ _ -> value gh (reveal vs'))
       (write_frame gh n v src #dq #vs')
   = write #gh n v src #dq #vs'
+
+(* -------------------------------------------------------------------------- *)
+(* Reader-side helpers                                                        *)
+(* -------------------------------------------------------------------------- *)
+
+let read_start_frag (gh:gname val_t) (ver:nat) (n:nat) : slprop =
+  exists* (h:history val_t) (vs:list val_t).
+    history_frag gh (ver / 2) vs #h **
+    pure (ver % 2 == 0 /\ List.length vs == n)
+
+let read_start_evidence (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (ver:nat) (n:nat) : slprop =
+  mono_nat_lb gver ver ** read_start_frag gh ver n
+
+let snapshot_values_match_from (i:nat) (n:nat)
+    (vals:Seq.seq val_t) (vs:list val_t) : prop =
+  forall (k:nat). i <= k /\ k < n ==>
+    seq_index_or #val_t 0 vals k == seq_index_or #val_t 0 (seq_of_snapshot vs) k
+
+ghost fn snapshot_evidence_dup_lb (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (i:nat) (ver_i:nat) (v_i:val_t)
+  requires snapshot_evidence gver gh i ver_i v_i
+  ensures snapshot_evidence gver gh i ver_i v_i ** mono_nat_lb gver ver_i
+{
+  unfold (snapshot_evidence gver gh i ver_i v_i);
+  let b = prop_as_bool (ver_i % 2 == 0);
+  if b {
+    t2b_true_of_prop (ver_i % 2 == 0);
+    assert (pure (Prims.t2b (ver_i % 2 == 0) == true));
+    elim_if_true_b (Prims.t2b (ver_i % 2 == 0))
+      (mono_nat_lb gver ver_i ** snapshot_even_evidence_payload gh i ver_i v_i)
+      (mono_nat_lb gver ver_i ** pure (ver_i % 2 <> 0));
+    dup_mono_nat_lb gver ver_i;
+    intro_cond_true_b (Prims.t2b (ver_i % 2 == 0))
+      (mono_nat_lb gver ver_i ** snapshot_even_evidence_payload gh i ver_i v_i)
+      (mono_nat_lb gver ver_i ** pure (ver_i % 2 <> 0));
+    fold (snapshot_evidence gver gh i ver_i v_i)
+  } else {
+    t2b_false_of_not (ver_i % 2 == 0);
+    assert (pure (Prims.t2b (ver_i % 2 == 0) == false));
+    elim_if_false_b (Prims.t2b (ver_i % 2 == 0))
+      (mono_nat_lb gver ver_i ** snapshot_even_evidence_payload gh i ver_i v_i)
+      (mono_nat_lb gver ver_i ** pure (ver_i % 2 <> 0));
+    dup_mono_nat_lb gver ver_i;
+    intro_cond_false_b (Prims.t2b (ver_i % 2 == 0))
+      (mono_nat_lb gver ver_i ** snapshot_even_evidence_payload gh i ver_i v_i)
+      (mono_nat_lb gver ver_i ** pure (ver_i % 2 <> 0));
+    fold (snapshot_evidence gver gh i ver_i v_i)
+  }
+}
+
+ghost fn snapshot_evidence_open_even (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (i:nat) (ver_i:nat) (v_i:val_t)
+  requires snapshot_evidence gver gh i ver_i v_i
+  requires pure (ver_i % 2 == 0)
+  ensures mono_nat_lb gver ver_i ** snapshot_even_evidence_payload gh i ver_i v_i
+{
+  unfold (snapshot_evidence gver gh i ver_i v_i);
+  t2b_true_of_prop (ver_i % 2 == 0);
+  assert (pure (Prims.t2b (ver_i % 2 == 0) == true));
+  elim_if_true_b (Prims.t2b (ver_i % 2 == 0))
+    (mono_nat_lb gver ver_i ** snapshot_even_evidence_payload gh i ver_i v_i)
+    (mono_nat_lb gver ver_i ** pure (ver_i % 2 <> 0))
+}
+
+ghost fn unpack_big_snapshot_evidence_nil (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (i:nat) (n:nat) (vers:Seq.seq nat) (vals:Seq.seq val_t)
+  requires big_snapshot_evidence_from gver gh i n vers vals
+  requires pure (i >= n)
+  ensures emp
+{
+  unfold (big_snapshot_evidence_from gver gh i n vers vals);
+  assert (pure ((i < n) == false));
+  elim_if_false_b (i < n)
+    (snapshot_evidence gver gh i (seq_index_or #nat 0 vers i) (seq_index_or #val_t 0 vals i) **
+     big_snapshot_evidence_from gver gh (i + 1) n vers vals)
+    emp
+}
+
+ghost fn unpack_big_snapshot_evidence_cons (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (i:nat) (n:nat) (vers:Seq.seq nat) (vals:Seq.seq val_t)
+  requires big_snapshot_evidence_from gver gh i n vers vals
+  requires pure (i < n)
+  ensures snapshot_evidence gver gh i (seq_index_or #nat 0 vers i) (seq_index_or #val_t 0 vals i) **
+          big_snapshot_evidence_from gver gh (i + 1) n vers vals
+{
+  unfold (big_snapshot_evidence_from gver gh i n vers vals);
+  assert (pure ((i < n) == true));
+  elim_if_true_b (i < n)
+    (snapshot_evidence gver gh i (seq_index_or #nat 0 vers i) (seq_index_or #val_t 0 vals i) **
+     big_snapshot_evidence_from gver gh (i + 1) n vers vals)
+    emp
+}
+
+ghost fn rec read_snapshot_consistent_from
+    (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (i:nat) (n:nat) (ver:nat) (vers:Seq.seq nat) (vals:Seq.seq val_t)
+    (hcur:history val_t) (vs0:list val_t)
+  requires big_snapshot_evidence_from gver gh i n vers vals
+  preserves mono_nat_auth gver 1.0R ver
+  preserves history_auth gh (1.0R /. 2.0R) hcur
+  requires pure (i <= n /\ ver % 2 == 0 /\ Seq.length vals == n /\
+                 List.length vs0 == n /\ versions_ge_from ver i n vers /\
+                 List.nth hcur (ver / 2) == Some vs0)
+  ensures pure (snapshot_values_match_from i n vals vs0)
+  decreases (n - i)
+{
+  if (i < n) {
+    unpack_big_snapshot_evidence_cons gver gh i n vers vals;
+    let ver_i = seq_index_or #nat 0 vers i;
+    let v_i = seq_index_or #val_t 0 vals i;
+    rewrite (snapshot_evidence gver gh i (seq_index_or #nat 0 vers i) (seq_index_or #val_t 0 vals i))
+      as (snapshot_evidence gver gh i ver_i v_i);
+    snapshot_evidence_dup_lb gver gh i ver_i v_i;
+    mono_nat_lb_valid gver #1.0R #ver #ver_i;
+    assert (pure (ver <= ver_i));
+    assert (pure (ver_i <= ver));
+    assert (pure (ver_i == ver));
+    rewrite each ver_i as ver;
+    snapshot_evidence_open_even gver gh i ver v_i;
+    drop_ (mono_nat_lb gver ver);
+    drop_ (mono_nat_lb gver ver);
+    unfold (snapshot_even_evidence_payload gh i ver v_i);
+    with vsi hi. _;
+    history_auth_frag_agree gh #(1.0R /. 2.0R) #hcur (ver / 2) vsi #hi;
+    assert (pure (vsi == vs0));
+    rewrite each vsi as vs0;
+    assert (pure (List.nth vs0 i == Some v_i));
+    seq_of_snapshot_nth vs0 i;
+    seq_index_or_index #val_t 0 vals i;
+    assert (pure (seq_index_or #val_t 0 vals i == seq_index_or #val_t 0 (seq_of_snapshot vs0) i));
+    assert (pure (versions_ge_from ver (i + 1) n vers));
+    read_snapshot_consistent_from gver gh (i + 1) n ver vers vals hcur vs0;
+    assert (pure (snapshot_values_match_from (i + 1) n vals vs0));
+    assert (pure (snapshot_values_match_from i n vals vs0))
+  } else {
+    unpack_big_snapshot_evidence_nil gver gh i n vers vals;
+    assert (pure (snapshot_values_match_from i n vals vs0))
+  }
+}
+
+ghost fn read_snapshot_consistent (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (n:nat) (ver:nat) (vers:Seq.seq nat) (vals:Seq.seq val_t)
+    (hcur:history val_t) (vs0:list val_t)
+  requires big_snapshot_evidence gver gh ver n vers vals
+  preserves mono_nat_auth gver 1.0R ver
+  preserves history_auth gh (1.0R /. 2.0R) hcur
+  requires pure (ver % 2 == 0 /\ List.length vs0 == n /\
+                 List.nth hcur (ver / 2) == Some vs0)
+  ensures pure (vals == seq_of_snapshot vs0)
+{
+  unfold (big_snapshot_evidence gver gh ver n vers vals);
+  assert (pure (Seq.length vals == n));
+  assert (pure (versions_ge_from ver 0 n vers));
+  read_snapshot_consistent_from gver gh 0 n ver vers vals hcur vs0;
+  assert (pure (snapshot_values_match_from 0 n vals vs0));
+  assert (pure (Seq.length (seq_of_snapshot vs0) == n));
+  Seq.lemma_eq_intro vals (seq_of_snapshot vs0);
+  Seq.lemma_eq_elim vals (seq_of_snapshot vs0);
+  assert (pure (vals == seq_of_snapshot vs0))
+}
+
+fn read_first_even
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:nat)
+  requires inv n_inv (seqlock_inv gver gh version data n)
+  returns r:option nat
+  ensures inv n_inv (seqlock_inv gver gh version data n) **
+          (match r with
+           | None -> emp
+           | Some ver -> read_start_evidence gver gh ver n)
+{
+  let r = with_invariants (option nat) emp_inames n_inv (seqlock_inv gver gh version data n)
+    emp
+    (fun r -> match r with
+      | None -> emp
+      | Some ver -> read_start_evidence gver gh ver n)
+  fn _ {
+    unfold (seqlock_inv gver gh version data n);
+    with curr h vs. _;
+    unfold (seqlock_inv_body gver gh version data n curr h vs);
+    let observed = version_read_atomic version #1.0R #(hide curr);
+    assert (pure (observed == curr));
+    if (observed % 2 = 0) {
+      rewrite each curr as observed;
+      t2b_true_of_prop (observed % 2 == 0);
+      assert (pure (Prims.t2b (observed % 2 == 0) == true));
+      elim_if_true_b (Prims.t2b (observed % 2 == 0))
+        (history_auth gh (1.0R /. 2.0R) h **
+         mono_nat_auth gver 1.0R observed **
+         A.pts_to data (seq_of_snapshot vs) **
+         pure (last_opt h == Some vs))
+        (history_auth gh (1.0R /. 4.0R) h **
+         mono_nat_auth gver (1.0R /. 2.0R) observed **
+         A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs));
+      mono_nat_lb_get gver #1.0R #observed;
+      last_opt_nth h (observed / 2) vs;
+      history_frag_alloc gh #(1.0R /. 2.0R) #h (observed / 2) vs;
+      intro_pure (last_opt h == Some vs) ();
+      intro_pure (List.length vs == n /\ List.length h == history_len_for_version observed) ();
+      pack_seqlock_inv_even gver gh version data n #observed #h #vs;
+      intro_pure (observed % 2 == 0 /\ List.length vs == n) ();
+      fold (read_start_frag gh observed n);
+      fold (read_start_evidence gver gh observed n);
+      Some observed
+    } else {
+      rewrite each curr as observed;
+      t2b_false_of_not (observed % 2 == 0);
+      assert (pure (Prims.t2b (observed % 2 == 0) == false));
+      elim_if_false_b (Prims.t2b (observed % 2 == 0))
+        (history_auth gh (1.0R /. 2.0R) h **
+         mono_nat_auth gver 1.0R observed **
+         A.pts_to data (seq_of_snapshot vs) **
+         pure (last_opt h == Some vs))
+        (history_auth gh (1.0R /. 4.0R) h **
+         mono_nat_auth gver (1.0R /. 2.0R) observed **
+         A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs));
+      intro_pure (List.length vs == n /\ List.length h == history_len_for_version observed) ();
+      pack_seqlock_inv_odd gver gh version data n #observed #h #vs;
+      None #nat
+    }
+  };
+  r
+}
+
+let read_attempt_frame (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (n_inv:iname) (version:ref nat) (data:array val_t) (n:SZ.t)
+    (ver:nat) (dst:array val_t) (vdst:Seq.seq val_t) (vers:Seq.seq nat) : slprop =
+  inv n_inv (seqlock_inv gver gh version data (SZ.v n)) **
+  A.pts_to dst vdst **
+  read_start_frag gh ver (SZ.v n) **
+  big_snapshot_evidence gver gh ver (SZ.v n) vers vdst **
+  pure (Seq.length vdst == SZ.v n /\ is_full_array dst)
+
+fn read_try_commit
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:SZ.t)
+   (ver:nat) (dst:array val_t)
+   (#vdst:erased (Seq.seq val_t)) (#vers:erased (Seq.seq nat))
+   (#is:inames) (phi:array val_t -> slprop)
+   (tok : au_token is (list val_t) (array val_t)
+      (fun vs -> value gh vs)
+      (fun vs copy -> value gh vs ** A.pts_to copy (seq_of_snapshot vs))
+      (fun _ copy -> phi copy))
+  requires read_attempt_frame gver gh n_inv version data n ver dst vdst vers **
+           au_available tok
+  returns r:option (array val_t)
+  ensures (match r with
+    | None -> read_attempt_frame gver gh n_inv version data n ver dst vdst vers **
+              au_available tok
+    | Some copy -> inv n_inv (seqlock_inv gver gh version data (SZ.v n)) **
+                   phi copy)
+{
+  later_credit_buy 3;
+  let attempt = au_atomic_step
+    #is #(add_inv emp_inames n_inv) #(list val_t) #(array val_t)
+    #(fun vs -> value gh vs)
+    #(fun vs copy -> value gh vs ** A.pts_to copy (seq_of_snapshot vs))
+    #(fun _ copy -> phi copy)
+    #(read_attempt_frame gver gh n_inv version data n ver dst (reveal vdst) (reveal vers))
+    #(fun _ -> inv n_inv (seqlock_inv gver gh version data (SZ.v n)))
+    tok
+  fn x {
+    unfold (read_attempt_frame gver gh n_inv version data n ver dst (reveal vdst) (reveal vers));
+    unfold (value gh (reveal x));
+    with h_au. _;
+    let res = with_invariants_a (option (array val_t)) emp_inames
+      n_inv (seqlock_inv gver gh version data (SZ.v n))
+      (A.pts_to dst (reveal vdst) **
+       read_start_frag gh ver (SZ.v n) **
+       big_snapshot_evidence gver gh ver (SZ.v n) (reveal vers) (reveal vdst) **
+       pure (Seq.length (reveal vdst) == SZ.v n /\ is_full_array dst) **
+       history_auth gh (1.0R /. 2.0R) h_au **
+       pure (last_opt h_au == Some (reveal x)))
+      (fun res -> match res with
+        | None -> A.pts_to dst (reveal vdst) **
+                  read_start_frag gh ver (SZ.v n) **
+                  big_snapshot_evidence gver gh ver (SZ.v n) (reveal vers) (reveal vdst) **
+                  pure (Seq.length (reveal vdst) == SZ.v n /\ is_full_array dst) **
+                  value gh (reveal x)
+        | Some copy -> value gh (reveal x) ** A.pts_to copy (seq_of_snapshot (reveal x)))
+    fn _ {
+      unfold (seqlock_inv gver gh version data (SZ.v n));
+      with curr hcur vscur. _;
+      unfold (seqlock_inv_body gver gh version data (SZ.v n) curr hcur vscur);
+      let observed = version_read_atomic version #1.0R #(hide curr);
+      assert (pure (observed == curr));
+      if (observed = ver) {
+        rewrite each curr as ver;
+        unfold (read_start_frag gh ver (SZ.v n));
+        with h0 vs0. _;
+        assert (pure (ver % 2 == 0));
+        t2b_true_of_prop (ver % 2 == 0);
+        assert (pure (Prims.t2b (ver % 2 == 0) == true));
+        elim_if_true_b (Prims.t2b (ver % 2 == 0))
+          (history_auth gh (1.0R /. 2.0R) hcur **
+           mono_nat_auth gver 1.0R ver **
+           A.pts_to data (seq_of_snapshot vscur) **
+           pure (last_opt hcur == Some vscur))
+          (history_auth gh (1.0R /. 4.0R) hcur **
+           mono_nat_auth gver (1.0R /. 2.0R) ver **
+           A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vscur));
+        history_auth_frag_agree gh #(1.0R /. 2.0R) #hcur (ver / 2) vs0 #h0;
+        last_opt_nth hcur (ver / 2) vscur;
+        assert (pure (vs0 == vscur));
+        history_auth_auth_agree gh #(1.0R /. 2.0R) #(1.0R /. 2.0R) #hcur #h_au;
+        rewrite each h_au as hcur;
+        assert (pure (reveal x == vscur));
+        read_snapshot_consistent gver gh (SZ.v n) ver (reveal vers) (reveal vdst) hcur vs0;
+        rewrite each (reveal vdst) as (seq_of_snapshot vs0);
+        rewrite each vs0 as (reveal x);
+        intro_pure (List.length vscur == SZ.v n /\ List.length hcur == history_len_for_version ver) ();
+        intro_pure (last_opt hcur == Some vscur) ();
+        pack_seqlock_inv_even gver gh version data (SZ.v n) #ver #hcur #vscur;
+        intro_pure (last_opt hcur == Some (reveal x)) ();
+        fold (value gh (reveal x));
+        Some dst
+      } else {
+        fold (seqlock_inv_body gver gh version data (SZ.v n) curr hcur vscur);
+        fold (seqlock_inv gver gh version data (SZ.v n));
+        intro_pure (last_opt h_au == Some (reveal x)) ();
+        fold (value gh (reveal x));
+        None #(array val_t)
+      }
+    };
+    match res {
+    None -> {
+      fold (read_attempt_frame gver gh n_inv version data n ver dst (reveal vdst) (reveal vers));
+      None #(array val_t)
+    }
+    Some copy -> {
+      Some copy
+    }
+    }
+  };
+  match attempt {
+  None -> {
+    None #(array val_t)
+  }
+  Some copy -> {
+    with _x. assert (phi copy ** inv n_inv (seqlock_inv gver gh version data (SZ.v n)));
+    Some copy
+  }
+  }
+}
+
+let read_frame (gh:gname val_t) (n:SZ.t) (v:big_atomic) : slprop =
+  is_seqlock v gh (SZ.v n) ** pure (SZ.v n > 0)
+
+fn rec read (#gh:gname val_t) (n:SZ.t) (v:big_atomic)
+    (#is:inames) (phi:array val_t -> slprop)
+    (tok : au_token is (list val_t) (array val_t)
+      (fun vs -> value gh vs)
+      (fun vs copy -> value gh vs ** A.pts_to copy (seq_of_snapshot vs))
+      (fun _ copy -> phi copy))
+    (_u:unit)
+  requires read_frame gh n v ** au_available tok
+  returns copy:array val_t
+  ensures read_frame gh n v ** phi copy
+{
+  unfold (read_frame gh n v);
+  unfold (is_seqlock v gh (SZ.v n));
+  with gver n_inv. _;
+  let version = fst v;
+  let data = snd v;
+  rewrite (inv n_inv (seqlock_inv gver gh (fst v) (snd v) (SZ.v n)))
+    as (inv n_inv (seqlock_inv gver gh version data (SZ.v n)));
+  let first = read_first_even #gver #gh #n_inv version data (SZ.v n);
+  match first {
+  None -> {
+    fold (is_seqlock v gh (SZ.v n));
+    fold (read_frame gh n v);
+    read #gh n v #is phi tok ()
+  }
+  Some ver -> {
+    unfold (read_start_evidence gver gh ver (SZ.v n));
+    let dst = A.alloc #val_t 0 n;
+    let vdst0 : erased (Seq.seq val_t) = hide (Seq.create (SZ.v n) 0);
+    rewrite (A.pts_to dst (Seq.create (SZ.v n) 0)) as (A.pts_to dst vdst0);
+    let vdst' = snapshot_copy #gver #gh #n_inv version data n ver dst #vdst0;
+    with vers. _;
+    fold (read_attempt_frame gver gh n_inv version data n ver dst (reveal vdst') vers);
+    let committed = read_try_commit #gver #gh #n_inv version data n ver dst #vdst' #(hide vers) #is phi tok;
+    match committed {
+    Some copy -> {
+      rewrite (inv n_inv (seqlock_inv gver gh version data (SZ.v n)))
+        as (inv n_inv (seqlock_inv gver gh (fst v) (snd v) (SZ.v n)));
+      fold (is_seqlock v gh (SZ.v n));
+      fold (read_frame gh n v);
+      copy
+    }
+    None -> {
+      unfold (read_attempt_frame gver gh n_inv version data n ver dst (reveal vdst') vers);
+      A.free dst #vdst';
+      drop_ (read_start_frag gh ver (SZ.v n));
+      drop_ (big_snapshot_evidence gver gh ver (SZ.v n) vers (reveal vdst'));
+      drop_ (pure (Seq.length (reveal vdst') == SZ.v n /\ is_full_array dst));
+      rewrite (inv n_inv (seqlock_inv gver gh version data (SZ.v n)))
+        as (inv n_inv (seqlock_inv gver gh (fst v) (snd v) (SZ.v n)));
+      fold (is_seqlock v gh (SZ.v n));
+      fold (read_frame gh n v);
+      read #gh n v #is phi tok ()
+    }
+    }
+  }
+  }
+}
+
+let read_is_lat (#gh:gname val_t) (n:SZ.t) (v:big_atomic) (#is:inames)
+  : lat is (list val_t) (array val_t)
+      (fun vs -> value gh vs)
+      (fun vs copy -> value gh vs ** A.pts_to copy (seq_of_snapshot vs))
+      (read_frame gh n v)
+  = read #gh n v
