@@ -51,6 +51,18 @@ val cas (r:ref U32.t) (u v:U32.t) (#i:erased U32.t)
       cond b (pts_to r v ** pure (reveal i == u)) 
              (pts_to r i ** pure (~ (reveal i == u))))
 
+/// Nat-valued CAS primitive for HeapLang-style proofs whose source program
+/// uses an unbounded natural-number reference.  Like [cas], this is a
+/// primitive boundary implemented by handwritten backend/runtime code; clients
+/// should call this operation instead of locally wrapping a load/store pair in
+/// [Pulse.Lib.Core.as_atomic].
+val cas_nat (r:ref nat) (u v:nat) (#i:erased nat)
+  : stt_atomic bool #Observable emp_inames
+    (pts_to r i)
+    (fun b ->
+      cond b (pts_to r v ** pure (reveal i == u))
+             (pts_to r i ** pure (~ (reveal i == u))))
+
 atomic fn read_atomic_box (r:B.box U32.t) (#n:erased U32.t) (#p:perm)
   preserves r |-> Frac p n
   returns x:U32.t

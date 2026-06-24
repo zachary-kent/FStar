@@ -12,6 +12,7 @@ open Pulse.Lib.SeqlockHistory
 open Pulse.Lib.MonotonicGhostRef
 open Pulse.Lib.Inv
 module A = Pulse.Lib.Array.PtsTo
+module AP = Pulse.Lib.Primitives
 module Arr = Pulse.Lib.Array
 module MGR = Pulse.Lib.MonotonicGhostRef
 module Seq = FStar.Seq
@@ -37,6 +38,7 @@ let seqlockN_tag : string = "PulseTutorial.Seqlock"
 (* [history] is list-based, while Pulse array ownership is sequence-based. *)
 let snapshot_of_seq (s:Seq.seq val_t) : list val_t = Seq.seq_to_list s
 let seq_of_snapshot (vs:list val_t) : Seq.seq val_t = Seq.seq_of_list vs
+let history_len_for_version (ver:nat) : nat = 1 + (ver + ver % 2) / 2
 
 let rec last_opt (#a:Type0) (xs:list a) : Tot (option a) =
   match xs with
@@ -142,6 +144,20 @@ ghost fn elim_if_false_b (b:bool) (p q:slprop)
   rewrite (if b then p else q) as q
 }
 
+ghost fn elim_ap_cond_true (p q:slprop)
+  requires AP.cond true p q
+  ensures p
+{
+  unfold AP.cond
+}
+
+ghost fn elim_ap_cond_false (p q:slprop)
+  requires AP.cond false p q
+  ensures q
+{
+  unfold AP.cond
+}
+
 (* Value abstraction visible to clients: half of the history authority and a
    witness that the latest snapshot is [vs]. *)
 let value (gh:gname val_t) (vs:list val_t) : slprop =
@@ -155,7 +171,7 @@ let seqlock_inv_body (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
                 (ver:nat) (h:history val_t) (vs:list val_t)
   : slprop =
   version |-> ver **
-  pure (List.length vs == len /\ List.length h == 1 + ver / 2) **
+  pure (List.length vs == len /\ List.length h == history_len_for_version ver) **
   (if ver % 2 == 0 then
      history_auth gh (1.0R /. 2.0R) h **
      mono_nat_auth gver 1.0R ver **
@@ -184,7 +200,7 @@ ghost fn pack_seqlock_inv_even (gver:MGR.mref mono_nat_increases) (gh:gname val_
   requires
     pure (ver % 2 == 0) **
     version |-> ver **
-    pure (List.length vs == n /\ List.length h == 1 + ver / 2) **
+    pure (List.length vs == n /\ List.length h == history_len_for_version ver) **
     history_auth gh (1.0R /. 2.0R) h **
     mono_nat_auth gver 1.0R ver **
     A.pts_to data (seq_of_snapshot vs) **
@@ -212,7 +228,7 @@ ghost fn pack_seqlock_inv_odd (gver:MGR.mref mono_nat_increases) (gh:gname val_t
   requires
     pure (ver % 2 <> 0) **
     version |-> ver **
-    pure (List.length vs == n /\ List.length h == 1 + ver / 2) **
+    pure (List.length vs == n /\ List.length h == history_len_for_version ver) **
     history_auth gh (1.0R /. 4.0R) h **
     mono_nat_auth gver (1.0R /. 2.0R) ver **
     A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs)
@@ -356,7 +372,7 @@ ghost fn fold_seqlock_inv_even (gver:MGR.mref mono_nat_increases) (gh:gname val_
   requires
     pure (ver % 2 == 0) **
     version |-> ver **
-    pure (List.length vs == n /\ List.length h == 1 + ver / 2) **
+    pure (List.length vs == n /\ List.length h == history_len_for_version ver) **
     history_auth gh (1.0R /. 2.0R) h **
     mono_nat_auth gver 1.0R ver **
     A.pts_to data (seq_of_snapshot vs) **
@@ -372,7 +388,7 @@ ghost fn fold_seqlock_inv_odd (gver:MGR.mref mono_nat_increases) (gh:gname val_t
   requires
     pure (ver % 2 <> 0) **
     version |-> ver **
-    pure (List.length vs == n /\ List.length h == 1 + ver / 2) **
+    pure (List.length vs == n /\ List.length h == history_len_for_version ver) **
     history_auth gh (1.0R /. 4.0R) h **
     mono_nat_auth gver (1.0R /. 2.0R) ver **
     A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs)
@@ -386,7 +402,7 @@ ghost fn seqlock_read_case_close (gver:MGR.mref mono_nat_increases) (gh:gname va
     (#ver:nat) (#h:history val_t) (#vs:list val_t) (v_i:val_t)
   requires
     version |-> ver **
-    pure (List.length vs == n /\ List.length h == 1 + ver / 2) **
+    pure (List.length vs == n /\ List.length h == history_len_for_version ver) **
     seqlock_read_case gver gh data ver h vs **
     mono_nat_lb gver ver_lb **
     pure (List.nth vs (SZ.v i) == Some v_i)
@@ -411,7 +427,7 @@ ghost fn seqlock_read_case_close (gver:MGR.mref mono_nat_increases) (gh:gname va
     history_frag_alloc gh #(1.0R /. 2.0R) #h (ver / 2) vs;
     assert (pure (ver % 2 == 0));
     assert (pure (last_opt h == Some vs));
-    intro_pure (List.length vs == n /\ List.length h == 1 + ver / 2) ();
+    intro_pure (List.length vs == n /\ List.length h == history_len_for_version ver) ();
     intro_pure (last_opt h == Some vs) ();
     fold_seqlock_inv_even gver gh version data n #ver #h #vs;
     t2b_true_of_prop (ver % 2 == 0);
@@ -433,7 +449,7 @@ ghost fn seqlock_read_case_close (gver:MGR.mref mono_nat_increases) (gh:gname va
     mono_nat_lb_get gver #(1.0R /. 2.0R) #ver;
     dup_mono_nat_lb gver ver;
     assert (pure (ver % 2 <> 0));
-    intro_pure (List.length vs == n /\ List.length h == 1 + ver / 2) ();
+    intro_pure (List.length vs == n /\ List.length h == history_len_for_version ver) ();
     fold_seqlock_inv_odd gver gh version data n #ver #h #vs;
     t2b_false_of_not (ver % 2 == 0);
     assert (pure (Prims.t2b (ver % 2 == 0) == false));
@@ -723,3 +739,615 @@ fn snapshot_copy
     (fun vers -> big_snapshot_evidence gver gh ver_lb (SZ.v n) vers vout) versout;
   hide vout
 }
+
+(* -------------------------------------------------------------------------- *)
+(* Writer-side helpers                                                        *)
+(* -------------------------------------------------------------------------- *)
+
+let rec last_opt_snoc (#a:Type0) (xs:list a) (x:a)
+  : Lemma (last_opt (xs @ [x]) == Some x)
+  = match xs with
+    | [] -> ()
+    | _::tl -> last_opt_snoc tl x
+
+let seq_prefix_eq (i:nat) (s t:Seq.seq val_t) : prop =
+  forall (k:nat). k < i /\ k < Seq.length s /\ k < Seq.length t ==>
+    Seq.index s k == Seq.index t k
+
+let seq_prefix_eq_succ (i:nat) (s t:Seq.seq val_t)
+  : Lemma
+      (requires i < Seq.length s /\ Seq.length s == Seq.length t /\ seq_prefix_eq i s t)
+      (ensures seq_prefix_eq (i + 1) (Seq.upd s i (Seq.index t i)) t)
+  = Seq.lemma_index_upd1 s i (Seq.index t i);
+    assert (forall (k:nat). k < i + 1 /\ k < Seq.length (Seq.upd s i (Seq.index t i)) /\ k < Seq.length t ==>
+              Seq.index (Seq.upd s i (Seq.index t i)) k == Seq.index t k)
+
+let seq_prefix_eq_all (s t:Seq.seq val_t)
+  : Lemma
+      (requires Seq.length s == Seq.length t /\ seq_prefix_eq (Seq.length s) s t)
+      (ensures s == t)
+  = Seq.lemma_eq_intro s t;
+    Seq.lemma_eq_elim s t
+
+ghost fn mono_nat_auth_auth_agree (gver:MGR.mref mono_nat_increases)
+    (#q1 #q2:perm) (#v1 #v2:nat)
+  preserves mono_nat_auth gver q1 v1 ** mono_nat_auth gver q2 v2
+  ensures pure (v1 == v2)
+{
+  unfold (mono_nat_auth gver q1 v1);
+  unfold (mono_nat_auth gver q2 v2);
+  MGR.take_snapshot #nat #mono_nat_increases gver #q1 v1;
+  MGR.take_snapshot #nat #mono_nat_increases gver #q2 v2;
+  MGR.recall_snapshot #nat #mono_nat_increases gver #q2 #v2 #v1;
+  MGR.recall_snapshot #nat #mono_nat_increases gver #q1 #v1 #v2;
+  assert (pure (v1 <= v2));
+  assert (pure (v2 <= v1));
+  assert (pure (v1 == v2));
+  fold (mono_nat_auth gver q1 v1);
+  fold (mono_nat_auth gver q2 v2)
+}
+
+ghost fn mono_nat_update (gver:MGR.mref mono_nat_increases) (#old:nat) (newv:nat)
+  requires mono_nat_auth gver 1.0R old ** pure (old <= newv)
+  ensures mono_nat_auth gver 1.0R newv
+{
+  unfold (mono_nat_auth gver 1.0R old);
+  MGR.update #nat #mono_nat_increases gver #old newv;
+  fold (mono_nat_auth gver 1.0R newv)
+}
+
+ghost fn mono_nat_gather (gver:MGR.mref mono_nat_increases)
+    (#q1 #q2:perm) (#v1 #v2:nat)
+  requires mono_nat_auth gver q1 v1 ** mono_nat_auth gver q2 v2
+  ensures mono_nat_auth gver (q1 +. q2) v1 ** pure (v1 == v2)
+{
+  mono_nat_auth_auth_agree gver #q1 #q2 #v1 #v2;
+  rewrite each v2 as v1;
+  unfold (mono_nat_auth gver q1 v1);
+  unfold (mono_nat_auth gver q2 v1);
+  MGR.gather #nat #mono_nat_increases gver #v1 #q1 #q2;
+  fold (mono_nat_auth gver (q1 +. q2) v1)
+}
+
+fn version_read_impl (version:ref nat) (#p:perm) (#ver:erased nat)
+  preserves version |-> Frac p ver
+  returns r:nat
+  ensures pure (r == reveal ver)
+{
+  !version
+}
+
+let version_read_atomic (version:ref nat) (#p:perm) (#ver:erased nat) =
+  Pulse.Lib.Core.as_atomic _ _ (version_read_impl version #p #ver)
+
+fn version_store_impl (version:ref nat) (newv:nat) (#old:erased nat)
+  requires version |-> old
+  ensures version |-> newv
+{
+  version := newv
+}
+
+let version_store_atomic (version:ref nat) (newv:nat) (#old:erased nat) =
+  Pulse.Lib.Core.as_atomic _ _ (version_store_impl version newv #old)
+
+fn version_store_bool_impl (version:ref nat) (newv:nat) (#old:erased nat)
+  requires version |-> old
+  returns b:bool
+  ensures version |-> newv ** pure (b == true)
+{
+  version := newv;
+  intro_pure (true == true) ();
+  true
+}
+
+let version_store_bool_atomic (version:ref nat) (newv:nat) (#old:erased nat) =
+  Pulse.Lib.Core.as_atomic _ _ (version_store_bool_impl version newv #old)
+
+fn data_write_slot_impl (data:array val_t) (i:SZ.t) (v_i:val_t)
+    (#s:erased (Seq.seq val_t){SZ.v i < Seq.length s})
+  requires A.pts_to data s
+  ensures A.pts_to data (Seq.upd s (SZ.v i) v_i)
+{
+  data.(i) <- v_i
+}
+
+let data_write_slot_atomic (data:array val_t) (i:SZ.t) (v_i:val_t)
+    (#s:erased (Seq.seq val_t){SZ.v i < Seq.length s}) =
+  Pulse.Lib.Core.as_atomic _ _ (data_write_slot_impl data i v_i #s)
+
+let writer_locked (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (data:array val_t) (n:nat) (start_ver:nat)
+    (h:history val_t) (old_vs:list val_t) (new_vs:list val_t)
+    (cur:Seq.seq val_t) : slprop =
+  history_auth gh (1.0R /. 4.0R) h **
+  mono_nat_auth gver (1.0R /. 2.0R) (start_ver + 1) **
+  A.pts_to data #(1.0R /. 2.0R) cur **
+  pure (start_ver % 2 == 0 /\ List.length old_vs == n /\
+        List.length new_vs == n /\
+        List.length h == history_len_for_version (start_ver + 1) /\
+        last_opt h == Some new_vs /\ Seq.length cur == n)
+
+ghost fn writer_locked_cur_length (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (data:array val_t) (n:nat) (start_ver:nat)
+    (#h:erased (history val_t)) (#old_vs:erased (list val_t)) (#new_vs:erased (list val_t))
+    (#cur:erased (Seq.seq val_t))
+  preserves writer_locked gver gh data n start_ver (reveal h) (reveal old_vs) (reveal new_vs) cur
+  ensures pure (Seq.length cur == n)
+{
+  unfold (writer_locked gver gh data n start_ver (reveal h) (reveal old_vs) (reveal new_vs) cur);
+  assert (pure (Seq.length cur == n));
+  intro_pure (Seq.length cur == n) ();
+  fold (writer_locked gver gh data n start_ver (reveal h) (reveal old_vs) (reveal new_vs) cur)
+}
+
+ghost fn write_read_version_close (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
+    (version:ref nat) (data:array val_t) (n:nat)
+    (#curr:nat) (#h:history val_t) (#vs:list val_t)
+  requires seqlock_inv_body gver gh version data n curr h vs
+  ensures seqlock_inv gver gh version data n ** mono_nat_lb gver curr
+{
+  unfold (seqlock_inv_body gver gh version data n curr h vs);
+  let b = prop_as_bool (curr % 2 == 0);
+  if b {
+    t2b_true_of_prop (curr % 2 == 0);
+    assert (pure (Prims.t2b (curr % 2 == 0) == true));
+    elim_if_true_b (Prims.t2b (curr % 2 == 0))
+      (history_auth gh (1.0R /. 2.0R) h **
+       mono_nat_auth gver 1.0R curr **
+       A.pts_to data (seq_of_snapshot vs) **
+       pure (last_opt h == Some vs))
+      (history_auth gh (1.0R /. 4.0R) h **
+       mono_nat_auth gver (1.0R /. 2.0R) curr **
+       A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs));
+    mono_nat_lb_get gver #1.0R #curr;
+    intro_pure (last_opt h == Some vs) ();
+    pack_seqlock_inv_even gver gh version data n #curr #h #vs
+  } else {
+    t2b_false_of_not (curr % 2 == 0);
+    assert (pure (Prims.t2b (curr % 2 == 0) == false));
+    elim_if_false_b (Prims.t2b (curr % 2 == 0))
+      (history_auth gh (1.0R /. 2.0R) h **
+       mono_nat_auth gver 1.0R curr **
+       A.pts_to data (seq_of_snapshot vs) **
+       pure (last_opt h == Some vs))
+      (history_auth gh (1.0R /. 4.0R) h **
+       mono_nat_auth gver (1.0R /. 2.0R) curr **
+       A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs));
+    mono_nat_lb_get gver #(1.0R /. 2.0R) #curr;
+    pack_seqlock_inv_odd gver gh version data n #curr #h #vs
+  }
+}
+
+fn write_read_version
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:nat)
+  requires inv n_inv (seqlock_inv gver gh version data n)
+  returns ver:nat
+  ensures inv n_inv (seqlock_inv gver gh version data n) ** mono_nat_lb gver ver
+{
+  let ver = with_invariants nat emp_inames n_inv (seqlock_inv gver gh version data n)
+    emp (fun r -> mono_nat_lb gver r)
+  fn _ {
+    unfold (seqlock_inv gver gh version data n);
+    with curr h vs. _;
+    unfold (seqlock_inv_body gver gh version data n curr h vs);
+    let r = version_read_atomic version #1.0R #(hide curr);
+    assert (pure (r == curr));
+    fold (seqlock_inv_body gver gh version data n curr h vs);
+    write_read_version_close gver gh version data n #curr #h #vs;
+    rewrite (mono_nat_lb gver curr) as (mono_nat_lb gver r);
+    r
+  };
+  ver
+}
+
+fn write_try_lock
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:nat) (start_ver:nat)
+   (#new_vs:erased (list val_t))
+   (#is:inames) (phi:unit -> slprop)
+   (tok : au_token is (list val_t) unit
+      (fun vs -> value gh vs)
+      (fun _ _ -> value gh (reveal new_vs))
+      (fun _ r -> phi r))
+  requires
+    inv n_inv (seqlock_inv gver gh version data n) **
+    au_available tok **
+    pure (start_ver % 2 == 0 /\ List.length (reveal new_vs) == n)
+  returns r:option (erased (history val_t & list val_t))
+  ensures inv n_inv (seqlock_inv gver gh version data n) **
+          (match r with
+           | None -> au_available tok
+           | Some info ->
+             writer_locked gver gh data n start_ver
+               (fst (reveal info)) (snd (reveal info)) (reveal new_vs)
+               (seq_of_snapshot (snd (reveal info))) **
+             phi ())
+{
+  later_credit_buy 3;
+  let attempt = au_atomic_step
+    #is #(add_inv emp_inames n_inv) #(list val_t) #unit
+    #(fun vs -> value gh vs)
+    #(fun _ _ -> value gh (reveal new_vs))
+    #(fun _ r -> phi r)
+    #(inv n_inv (seqlock_inv gver gh version data n))
+    #(fun _ -> exists* (info:erased (history val_t & list val_t)).
+        writer_locked gver gh data n start_ver
+          (fst (reveal info)) (snd (reveal info)) (reveal new_vs)
+          (seq_of_snapshot (snd (reveal info))))
+    tok
+  fn x {
+    unfold (value gh (reveal x));
+    with h_au. _;
+    let r = with_invariants_a (option (erased (history val_t & list val_t))) emp_inames
+      n_inv (seqlock_inv gver gh version data n)
+      (history_auth gh (1.0R /. 2.0R) h_au **
+       pure (last_opt h_au == Some (reveal x)))
+      (fun r -> match r with
+        | None -> value gh (reveal x)
+        | Some info ->
+          writer_locked gver gh data n start_ver
+            (fst (reveal info)) (snd (reveal info)) (reveal new_vs)
+            (seq_of_snapshot (snd (reveal info))) **
+          value gh (reveal new_vs))
+    fn _ {
+      unfold (seqlock_inv gver gh version data n);
+      with curr h vs. _;
+      unfold (seqlock_inv_body gver gh version data n curr h vs);
+      let next_ver : nat = start_ver + 1;
+      let b = AP.cas_nat version start_ver next_ver #(hide curr);
+      if b {
+        elim_ap_cond_true
+          (version |-> next_ver ** pure (curr == start_ver))
+          (version |-> curr ** pure (~ (curr == start_ver)));
+        assert (pure (curr == start_ver));
+        rewrite each curr as start_ver;
+        t2b_true_of_prop (start_ver % 2 == 0);
+        assert (pure (Prims.t2b (start_ver % 2 == 0) == true));
+        elim_if_true_b (Prims.t2b (start_ver % 2 == 0))
+          (history_auth gh (1.0R /. 2.0R) h **
+           mono_nat_auth gver 1.0R start_ver **
+           A.pts_to data (seq_of_snapshot vs) **
+           pure (last_opt h == Some vs))
+          (history_auth gh (1.0R /. 4.0R) h **
+           mono_nat_auth gver (1.0R /. 2.0R) start_ver **
+           A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot vs));
+
+        history_auth_auth_agree gh #(1.0R /. 2.0R) #(1.0R /. 2.0R) #h #h_au;
+        rewrite each h_au as h;
+        assert (pure (reveal x == vs));
+        history_gather gh #(1.0R /. 2.0R) #(1.0R /. 2.0R) #h #h;
+        assert (pure ((1.0R /. 2.0R) +. (1.0R /. 2.0R) == 1.0R));
+        rewrite (history_auth gh ((1.0R /. 2.0R) +. (1.0R /. 2.0R)) h)
+          as (history_auth gh 1.0R h);
+        history_extend gh #h (reveal new_vs);
+        drop_ (history_frag gh (List.length h) (reveal new_vs) #(h @ [reveal new_vs]));
+        last_opt_snoc h (reveal new_vs);
+        history_share gh #1.0R #(h @ [reveal new_vs]);
+        intro_pure (last_opt (h @ [reveal new_vs]) == Some (reveal new_vs)) ();
+        fold (value gh (reveal new_vs));
+        history_share gh #(1.0R /. 2.0R) #(h @ [reveal new_vs]);
+        assert (pure (1.0R /. 2.0R /. 2.0R == 1.0R /. 4.0R));
+        rewrite each (1.0R /. 2.0R /. 2.0R) as (1.0R /. 4.0R);
+
+        A.share data #(seq_of_snapshot vs) #1.0R;
+        mono_nat_update gver #start_ver (start_ver + 1);
+        unfold (mono_nat_auth gver 1.0R (start_ver + 1));
+        MGR.share #nat #mono_nat_increases gver #(start_ver + 1) #1.0R
+          #(1.0R /. 2.0R) #(1.0R /. 2.0R);
+        fold (mono_nat_auth gver (1.0R /. 2.0R) (start_ver + 1));
+        fold (mono_nat_auth gver (1.0R /. 2.0R) (start_ver + 1));
+
+        assert (pure ((start_ver + 1) % 2 <> 0));
+        List.Tot.append_length h [reveal new_vs];
+        assert (pure (List.length [reveal new_vs] == 1));
+        assert (pure (List.length (h @ [reveal new_vs]) == List.length h + 1));
+        assert (pure (List.length (h @ [reveal new_vs]) == history_len_for_version (start_ver + 1)));
+        intro_pure (List.length vs == n /\
+                    List.length (h @ [reveal new_vs]) == history_len_for_version (start_ver + 1)) ();
+        pack_seqlock_inv_odd gver gh version data n #(start_ver + 1) #(h @ [reveal new_vs]) #vs;
+        intro_pure (start_ver % 2 == 0 /\ List.length vs == n /\
+                    List.length (reveal new_vs) == n /\
+                    List.length (h @ [reveal new_vs]) == history_len_for_version (start_ver + 1) /\
+                    last_opt (h @ [reveal new_vs]) == Some (reveal new_vs) /\
+                    Seq.length (seq_of_snapshot vs) == n) ();
+        fold (writer_locked gver gh data n start_ver (h @ [reveal new_vs]) vs (reveal new_vs)
+          (seq_of_snapshot vs));
+        Some (hide (h @ [reveal new_vs], vs))
+      } else {
+        elim_ap_cond_false
+          (version |-> next_ver ** pure (curr == start_ver))
+          (version |-> curr ** pure (~ (curr == start_ver)));
+        drop_ (pure (~ (curr == start_ver)));
+        fold (seqlock_inv_body gver gh version data n curr h vs);
+        fold (seqlock_inv gver gh version data n);
+        intro_pure (last_opt h_au == Some (reveal x)) ();
+        fold (value gh (reveal x));
+        None #(erased (history val_t & list val_t))
+      }
+    };
+    match r {
+    None -> {
+      None #unit
+    }
+    Some info -> {
+      intro_exists #(erased (history val_t & list val_t))
+        (fun info -> writer_locked gver gh data n start_ver
+          (fst (reveal info)) (snd (reveal info)) (reveal new_vs)
+          (seq_of_snapshot (snd (reveal info)))) info;
+      Some ()
+    }
+    }
+  };
+  match attempt {
+  None -> {
+    None #(erased (history val_t & list val_t))
+  }
+  Some y -> {
+    with _x. assert (phi y ** (exists* (info:erased (history val_t & list val_t)).
+      writer_locked gver gh data n start_ver
+        (fst (reveal info)) (snd (reveal info)) (reveal new_vs)
+        (seq_of_snapshot (snd (reveal info)))));
+    with info. _;
+    rewrite (phi y) as (phi ());
+    Some info
+  }
+  }
+}
+
+fn write_copy_step
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:nat)
+   (src:array val_t) (#dq:perm)
+   (#srcs:erased (Seq.seq val_t))
+   (#start_ver:erased nat) (#h:erased (history val_t))
+   (#old_vs:erased (list val_t)) (#new_vs:erased (list val_t))
+   (#cur:erased (Seq.seq val_t))
+   (i:SZ.t{SZ.v i < n /\ SZ.v i < Seq.length srcs /\ SZ.v i < Seq.length cur})
+  requires
+       inv n_inv (seqlock_inv gver gh version data n)
+    ** writer_locked gver gh data n (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur
+    ** A.pts_to src #dq srcs
+    ** pure (SZ.v i < n /\ Seq.length srcs == n /\ Seq.length cur == n /\
+             seq_prefix_eq (SZ.v i) cur srcs)
+  returns cur1:erased (Seq.seq val_t)
+  ensures
+       inv n_inv (seqlock_inv gver gh version data n)
+    ** writer_locked gver gh data n (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur1
+    ** A.pts_to src #dq srcs
+    ** pure (reveal cur1 == Seq.upd cur (SZ.v i) (Seq.index srcs (SZ.v i)) /\
+             Seq.length (reveal cur1) == n /\
+             seq_prefix_eq (SZ.v i + 1) cur1 srcs)
+{
+  let v_i = src.(i);
+  Seq.lemma_len_upd (SZ.v i) v_i cur;
+  let cur1 : erased (Seq.seq val_t) = hide (Seq.upd cur (SZ.v i) v_i);
+  let _ = with_invariants unit emp_inames n_inv (seqlock_inv gver gh version data n)
+    (writer_locked gver gh data n (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur)
+    (fun _ -> writer_locked gver gh data n (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur1)
+  fn _ {
+    unfold (writer_locked gver gh data n (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur);
+    unfold (seqlock_inv gver gh version data n);
+    with curr h_inv vs_inv. _;
+    unfold (seqlock_inv_body gver gh version data n curr h_inv vs_inv);
+    seqlock_read_case_intro gver gh data #curr #h_inv #vs_inv;
+    unfold (seqlock_read_case gver gh data curr h_inv vs_inv);
+    with hp vp dp. _;
+    mono_nat_auth_auth_agree gver #(1.0R /. 2.0R) #vp #(reveal start_ver + 1) #curr;
+    assert (pure (curr == reveal start_ver + 1));
+    rewrite each curr as (reveal start_ver + 1);
+    assert (pure ((reveal start_ver + 1) % 2 <> 0));
+    assert (pure (hp == (1.0R /. 4.0R) /\ vp == (1.0R /. 2.0R) /\ dp == (1.0R /. 2.0R)));
+    rewrite each hp as (1.0R /. 4.0R);
+    rewrite each vp as (1.0R /. 2.0R);
+    rewrite each dp as (1.0R /. 2.0R);
+    history_auth_auth_agree gh;
+    rewrite each h_inv as (reveal h);
+    A.pts_to_injective_eq data;
+    A.gather data;
+    data_write_slot_atomic data i v_i #cur;
+    Seq.lemma_len_upd (SZ.v i) v_i cur;
+    A.share data #(Seq.upd cur (SZ.v i) v_i) #1.0R;
+    Seq.lemma_seq_of_seq_to_list (reveal cur1);
+    rewrite (A.pts_to data #(1.0R /. 2.0R) (reveal cur1))
+      as (A.pts_to data #(1.0R /. 2.0R) (seq_of_snapshot (snapshot_of_seq (reveal cur1))));
+    assert (pure (List.length (snapshot_of_seq (reveal cur1)) == n));
+    assert (pure (List.length (reveal h) == history_len_for_version (reveal start_ver + 1)));
+    intro_pure (List.length (snapshot_of_seq (reveal cur1)) == n /\
+                List.length (reveal h) == history_len_for_version (reveal start_ver + 1)) ();
+    pack_seqlock_inv_odd gver gh version data n #(reveal start_ver + 1)
+      #(reveal h) #(snapshot_of_seq (reveal cur1));
+    intro_pure (reveal start_ver % 2 == 0 /\ List.length (reveal old_vs) == n /\
+                List.length (reveal new_vs) == n /\
+                List.length (reveal h) == history_len_for_version (reveal start_ver + 1) /\
+                last_opt (reveal h) == Some (reveal new_vs) /\
+                Seq.length (reveal cur1) == n) ();
+    fold (writer_locked gver gh data n (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur1)
+  };
+  seq_prefix_eq_succ (SZ.v i) cur srcs;
+  assert (pure (reveal cur1 == Seq.upd cur (SZ.v i) (Seq.index srcs (SZ.v i))));
+  intro_pure (reveal cur1 == Seq.upd cur (SZ.v i) (Seq.index srcs (SZ.v i)) /\
+              Seq.length (reveal cur1) == n /\
+              seq_prefix_eq (SZ.v i + 1) cur1 srcs) ();
+  cur1
+}
+
+fn rec write_copy_aux
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:SZ.t)
+   (i:SZ.t) (src:array val_t) (#dq:perm)
+   (#srcs:erased (Seq.seq val_t))
+   (#start_ver:erased nat) (#h:erased (history val_t))
+   (#old_vs:erased (list val_t)) (#new_vs:erased (list val_t))
+   (#cur:erased (Seq.seq val_t))
+  requires
+       inv n_inv (seqlock_inv gver gh version data (SZ.v n))
+    ** writer_locked gver gh data (SZ.v n) (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur
+    ** A.pts_to src #dq srcs
+    ** pure (SZ.v i <= SZ.v n /\ Seq.length srcs == SZ.v n /\ Seq.length cur == SZ.v n /\
+             seq_prefix_eq (SZ.v i) cur srcs)
+  ensures
+       inv n_inv (seqlock_inv gver gh version data (SZ.v n))
+    ** writer_locked gver gh data (SZ.v n) (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) srcs
+    ** A.pts_to src #dq srcs
+  decreases (SZ.v n - SZ.v i)
+{
+  if (i = n) {
+    assert (pure (SZ.v i == SZ.v n));
+    seq_prefix_eq_all cur srcs;
+    rewrite (writer_locked gver gh data (SZ.v n) (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) cur)
+      as (writer_locked gver gh data (SZ.v n) (reveal start_ver) (reveal h) (reveal old_vs) (reveal new_vs) srcs)
+  } else {
+    assert (pure (SZ.v i < SZ.v n));
+    SZ.fits_lte (SZ.v i + 1) (SZ.v n);
+    let cur1 = write_copy_step #gver #gh #n_inv version data (SZ.v n) src #dq #srcs
+      #start_ver #h #old_vs #new_vs #cur i;
+    let i1 = SZ.add i 1sz;
+    assert (pure (SZ.v i1 == SZ.v i + 1));
+    write_copy_aux #gver #gh #n_inv version data n i1 src #dq #srcs
+      #start_ver #h #old_vs #new_vs #cur1
+  }
+}
+
+fn write_unlock
+   (#gver:MGR.mref mono_nat_increases) (#gh:gname val_t) (#n_inv:iname)
+   (version:ref nat) (data:array val_t) (n:SZ.t)
+   (start_ver:nat) (#h:erased (history val_t))
+   (#old_vs:erased (list val_t)) (#new_vs:erased (list val_t))
+  requires
+       inv n_inv (seqlock_inv gver gh version data (SZ.v n))
+    ** writer_locked gver gh data (SZ.v n) start_ver (reveal h) (reveal old_vs)
+         (reveal new_vs) (seq_of_snapshot (reveal new_vs))
+    ** pure (List.length (reveal new_vs) == SZ.v n)
+  ensures
+       inv n_inv (seqlock_inv gver gh version data (SZ.v n))
+    ** pure (List.length (reveal new_vs) == SZ.v n)
+{
+  let stored = with_invariants bool emp_inames
+    n_inv (seqlock_inv gver gh version data (SZ.v n))
+    (writer_locked gver gh data (SZ.v n) start_ver (reveal h) (reveal old_vs)
+       (reveal new_vs) (seq_of_snapshot (reveal new_vs)))
+    (fun b -> pure (b == true))
+  fn _ {
+    unfold (writer_locked gver gh data (SZ.v n) start_ver (reveal h) (reveal old_vs)
+      (reveal new_vs) (seq_of_snapshot (reveal new_vs)));
+    unfold (seqlock_inv gver gh version data (SZ.v n));
+    with curr h_inv vs_inv. _;
+    unfold (seqlock_inv_body gver gh version data (SZ.v n) curr h_inv vs_inv);
+    seqlock_read_case_intro gver gh data #curr #h_inv #vs_inv;
+    unfold (seqlock_read_case gver gh data curr h_inv vs_inv);
+    with hp vp dp. _;
+    mono_nat_auth_auth_agree gver #(1.0R /. 2.0R) #vp #(start_ver + 1) #curr;
+    assert (pure (curr == start_ver + 1));
+    rewrite each curr as (start_ver + 1);
+    assert (pure ((start_ver + 1) % 2 <> 0));
+    assert (pure (hp == (1.0R /. 4.0R) /\ vp == (1.0R /. 2.0R) /\ dp == (1.0R /. 2.0R)));
+    rewrite each hp as (1.0R /. 4.0R);
+    rewrite each vp as (1.0R /. 2.0R);
+    rewrite each dp as (1.0R /. 2.0R);
+    let stored = version_store_bool_atomic version (start_ver + 2) #(hide (start_ver + 1));
+
+    history_auth_auth_agree gh #(1.0R /. 4.0R) #(1.0R /. 4.0R) #(reveal h) #h_inv;
+    rewrite each h_inv as (reveal h);
+    A.pts_to_injective_eq data;
+    A.gather data;
+    mono_nat_gather gver #(1.0R /. 2.0R) #(1.0R /. 2.0R)
+      #(start_ver + 1) #(start_ver + 1);
+    assert (pure ((1.0R /. 2.0R) +. (1.0R /. 2.0R) == 1.0R));
+    rewrite (mono_nat_auth gver ((1.0R /. 2.0R) +. (1.0R /. 2.0R)) (start_ver + 1))
+      as (mono_nat_auth gver 1.0R (start_ver + 1));
+    mono_nat_update gver #(start_ver + 1) (start_ver + 2);
+
+    history_gather gh #(1.0R /. 4.0R) #(1.0R /. 4.0R) #(reveal h) #(reveal h);
+    assert (pure ((1.0R /. 4.0R) +. (1.0R /. 4.0R) == (1.0R /. 2.0R)));
+    rewrite (history_auth gh ((1.0R /. 4.0R) +. (1.0R /. 4.0R)) (reveal h))
+      as (history_auth gh (1.0R /. 2.0R) (reveal h));
+    assert (pure (start_ver % 2 == 0));
+    assert (pure ((start_ver + 2) % 2 == 0));
+    assert (pure (List.length (reveal h) == history_len_for_version (start_ver + 2)));
+    intro_pure (List.length (reveal new_vs) == SZ.v n /\
+                List.length (reveal h) == history_len_for_version (start_ver + 2)) ();
+    intro_pure (last_opt (reveal h) == Some (reveal new_vs)) ();
+    pack_seqlock_inv_even gver gh version data (SZ.v n) #(start_ver + 2)
+      #(reveal h) #(reveal new_vs);
+    stored
+  };
+  drop_ (pure (stored == true));
+  intro_pure (List.length (reveal new_vs) == SZ.v n) ()
+}
+
+let write_frame (gh:gname val_t) (n:SZ.t) (v:big_atomic) (src:array val_t)
+    (#dq:perm) (#vs:erased (list val_t)) : slprop =
+  is_seqlock v gh (SZ.v n) **
+  A.pts_to src #dq (seq_of_snapshot (reveal vs)) **
+  pure (List.length (reveal vs) == SZ.v n)
+
+fn rec write (#gh:gname val_t) (n:SZ.t) (v:big_atomic) (src:array val_t)
+    (#dq:perm) (#vs':erased (list val_t))
+    (#is:inames) (phi:unit -> slprop)
+    (tok : au_token is (list val_t) unit
+      (fun vs -> value gh vs)
+      (fun _ _ -> value gh (reveal vs'))
+      (fun _ r -> phi r))
+    (_u:unit)
+  requires
+       write_frame gh n v src #dq #vs'
+    ** au_available tok
+  returns r:unit
+  ensures
+       write_frame gh n v src #dq #vs'
+    ** phi r
+{
+  unfold (write_frame gh n v src #dq #vs');
+  unfold (is_seqlock v gh (SZ.v n));
+  with gver n_inv. _;
+  let version = fst v;
+  let data = snd v;
+  rewrite (inv n_inv (seqlock_inv gver gh (fst v) (snd v) (SZ.v n)))
+    as (inv n_inv (seqlock_inv gver gh version data (SZ.v n)));
+  let ver = write_read_version #gver #gh #n_inv version data (SZ.v n);
+  if (ver % 2 = 0) {
+    let locked = write_try_lock #gver #gh #n_inv version data (SZ.v n) ver #vs' #is phi tok;
+    drop_ (mono_nat_lb gver ver);
+    match locked {
+    None -> {
+      fold (is_seqlock v gh (SZ.v n));
+      fold (write_frame gh n v src #dq #vs');
+      write #gh n v src #dq #vs' #is phi tok ()
+    }
+    Some info -> {
+      let locked_h : erased (history val_t) = hide (fst (reveal info));
+      let old_vs : erased (list val_t) = hide (snd (reveal info));
+      let srcs : erased (Seq.seq val_t) = hide (seq_of_snapshot (reveal vs'));
+      let cur0 : erased (Seq.seq val_t) = hide (seq_of_snapshot (reveal old_vs));
+      assert (pure (Seq.length srcs == SZ.v n));
+      rewrite (writer_locked gver gh data (SZ.v n) ver (fst (reveal info)) (snd (reveal info))
+                 (reveal vs') (seq_of_snapshot (snd (reveal info))))
+        as (writer_locked gver gh data (SZ.v n) ver (reveal locked_h) (reveal old_vs) (reveal vs') cur0);
+      writer_locked_cur_length gver gh data (SZ.v n) ver #locked_h #old_vs #vs' #cur0;
+      assert (pure (seq_prefix_eq 0 cur0 srcs));
+      write_copy_aux #gver #gh #n_inv version data n 0sz src #dq #srcs
+        #(hide ver) #locked_h #old_vs #vs' #cur0;
+      rewrite (writer_locked gver gh data (SZ.v n) ver (reveal locked_h) (reveal old_vs) (reveal vs') srcs)
+        as (writer_locked gver gh data (SZ.v n) (reveal (hide ver)) (reveal locked_h) (reveal old_vs)
+              (reveal vs') (seq_of_snapshot (reveal vs')));
+      write_unlock #gver #gh #n_inv version data n ver #locked_h #old_vs #vs';
+      fold (is_seqlock v gh (SZ.v n));
+      fold (write_frame gh n v src #dq #vs')
+    }
+    }
+  } else {
+    drop_ (mono_nat_lb gver ver);
+    fold (is_seqlock v gh (SZ.v n));
+    fold (write_frame gh n v src #dq #vs');
+    write #gh n v src #dq #vs' #is phi tok ()
+  }
+}
+
+let write_is_lat (#gh:gname val_t) (n:SZ.t) (v:big_atomic) (src:array val_t)
+    (#dq:perm) (#vs':erased (list val_t)) (#is:inames)
+  : lat is (list val_t) unit
+      (fun vs -> value gh vs)
+      (fun _ _ -> value gh (reveal vs'))
+      (write_frame gh n v src #dq #vs')
+  = write #gh n v src #dq #vs'

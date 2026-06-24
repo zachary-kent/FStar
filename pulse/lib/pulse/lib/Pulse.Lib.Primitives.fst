@@ -53,6 +53,33 @@ ensures
 
 let cas r u v #i = Pulse.Lib.Core.as_atomic _ _ (cas_impl r u v #i)
 
+fn cas_nat_impl
+    (r:ref nat)
+    (u v:nat)
+    (#i:erased nat)
+requires
+  pts_to r i
+  returns b:bool
+ensures
+  cond b (pts_to r v ** pure (reveal i == u))
+         (pts_to r i ** pure (~ (reveal i == u)))
+{
+  let u' = !r;
+  if (u = u')
+  {
+    r := v;
+    fold (cond true (pts_to r v ** pure (reveal i == u)) (pts_to r i ** pure (~ (reveal i == u))));
+    true
+  }
+  else
+  {
+    fold cond false (pts_to r v ** pure (reveal i == u)) (pts_to r i ** pure (~ (reveal i == u)));
+    false
+  }
+}
+
+let cas_nat r u v #i = Pulse.Lib.Core.as_atomic _ _ (cas_nat_impl r u v #i)
+
 atomic fn read_atomic_box (r:B.box U32.t) (#n:erased U32.t) (#p:perm)
   preserves r |-> Frac p n
   returns x:U32.t
