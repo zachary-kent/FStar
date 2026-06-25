@@ -1,8 +1,93 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
-(** Seqlock, ported from the Iris development in /tmp/pers-impl/seqlock.v.
+(** PulseTutorial.Seqlock — a logically-atomic seqlock in Pulse.
 
-    Phase 1 contains the shared state predicates and the non-atomic constructor.
-    Later phases add snapshot_copy, write, and read with logically-atomic specs. *)
+    Ported from the Iris development at /tmp/pers-impl/seqlock.v (see
+    PulseTutorial.Seqlock.AUDIT.md for the full deviation index and
+    extraction-assumption inventory).
+
+    ## What this module exports
+
+    * `is_seqlock v gh n` — the externally-visible representation predicate
+      tying a `big_atomic` triple to an abstract history-ghost name and an
+      array length.
+    * `value gh vs` — the logical seqlock value: `history_auth gh (1/2) h`
+      witnessing `last(h) == Some vs`. The AU's alpha/beta refer to this.
+    * `new_big_atomic` — non-atomic constructor: allocates the version cell,
+      the data array, and the history ghost reference; returns `is_seqlock`
+      plus the full `value`.
+    * `write_is_lat` / `write` — logically-atomic store. LP at the
+      lock-acquiring CAS (see "LP locations" below).
+    * `read_is_lat` / `read` — logically-atomic read, snapshot-then-revalidate
+      protocol. LP at the second version-read when it equals the first and
+      is even.
+
+    ## Ghost state
+
+    The proof carries two ghost references behind `is_seqlock`:
+
+    * `gver : mref mono_nat_increases` — a monotone-nat reference tracking
+      the seqlock version. Used to give per-element snapshot evidence a
+      lower bound (`mono_nat_lb`) at slot-read time, then to enforce that
+      every slot was read at the same final version during read validation.
+    * `gh : gname val_t` (via `Pulse.Lib.SeqlockHistory`) — a monotone
+      history of committed snapshots. `history_auth gh (1/2) h` is the
+      writer-visible authority; `history_frag gh k v` is a persistent
+      witness that `nth k h == Some v`. Readers collect per-slot fragments
+      during snapshot and combine them at validation to prove the snapshot
+      equals the AU's committed value.
+
+    ## The invariant
+
+    `seqlock_inv` is parity-branched on the physical version:
+
+    * EVEN branch (lock released): full data ownership, full mono_nat
+      authority, 1/2 history authority, and `last(h) == Some vs` tying the
+      physical contents to the latest committed snapshot.
+    * ODD branch (lock held): half data, half mono_nat, 1/4 history; the
+      physical `vs` is decoupled from `last(h)` because the writer has
+      already extended the history at CAS time but has not yet finished
+      copying the new value into the array.
+
+    History length is `1 + (ver + ver%2)/2` — parity-aware. On even versions
+    this agrees with Iris's `1 + ver/2`; on odd versions it is one greater,
+    reflecting that the new entry was installed at the LP-at-CAS step.
+
+    ## LP locations
+
+    * **`write`: LP at the CAS that acquires the lock.** A single atomic
+      step opens both `seqlock_inv` (in its even pre-lock branch) and the
+      AU iname. Inside that step: the AU's `value gh vs_au` is forced to
+      agree with the invariant's history via `history_auth_auth_agree`,
+      the history is extended with the new value `vs'`, and `au_commit`
+      fires. The subsequent copy phase and final-store unlock are AU-free.
+
+      The Iris source places the write LP at the final-store unlock
+      instead. Both choices are sound because no client can observe the
+      abstract-state change inside the locked region (concurrent readers
+      spin on odd version). We pick CAS for cleaner Pulse control flow.
+      See AUDIT.md row "Write LP at the lock-acquiring CAS" for the full
+      `VERIFIED-EQUIVALENT-REWRITE` justification.
+
+    * **`read`: LP at the second version-read.** A snapshot-then-revalidate
+      protocol: (1) atomic version read inside the invariant, capturing a
+      `mono_nat_lb` for later use; (2) per-slot atomic data reads, each
+      producing per-slot evidence (mono_nat_lb + history_frag at the slot's
+      observed version, when even); (3) atomic version re-read. If the
+      second read returns the same even version, the consistency lemma
+      `read_snapshot_consistent_from` folds the per-slot evidence against
+      the current invariant state to derive `snapshot == last(h_current)`,
+      which combined with `history_auth_auth_agree` against the AU's
+      `value gh vs` yields `snapshot == vs`. AU commits at this step.
+
+    ## Atomicity boundary
+
+    Five operations in this file are wrapped with `Pulse.Lib.Core.as_atomic`
+    (`snapshot_read_slot_atomic`, `version_read_atomic`,
+    `version_store_bool_atomic`, `data_write_slot_atomic`, plus
+    `AP.cas_nat` from `Pulse.Lib.Primitives`). The first four model single
+    aligned hardware loads/stores; the fifth (`cas_nat`) demands a true
+    hardware CAS or lock-wrapped runtime. See AUDIT.md "`as_atomic`
+    taxonomy" for the per-site extraction assumption. *)
 module PulseTutorial.Seqlock
 #lang-pulse
 
