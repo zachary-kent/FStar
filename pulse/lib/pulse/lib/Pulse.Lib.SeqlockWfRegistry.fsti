@@ -5,9 +5,14 @@ module List = FStar.List.Tot
 open FStar.List.Tot { (@) }
 module GR = Pulse.Lib.GhostReference
 
-(* Per-request linearization ghost variable name.  The registry stores the
-   actual half-fractional bool ghost reference used by request_inv/write_inv. *)
-type lin_gname = GR.ref bool
+(* Per-request linearization ghost name.  The registry stores the actual
+   half-fractional bool ghost reference used by request_inv/write_inv, plus
+   the concrete Pulse invariant name for this request's write_inv. *)
+unopteq
+type lin_gname = {
+  lin_ref : GR.ref bool;
+  write_i : iname;
+}
 
 type request = lin_gname & nat
 

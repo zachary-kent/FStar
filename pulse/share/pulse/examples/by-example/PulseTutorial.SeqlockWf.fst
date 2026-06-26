@@ -8,6 +8,7 @@ open Pulse.Lib.LogicalAtomicity
 open Pulse.Lib.SeqlockHistory
 open Pulse.Lib.MonotonicGhostRef
 open Pulse.Lib.Inv
+module CAU = Pulse.Lib.CoinductiveAU
 module A = Pulse.Lib.Array.PtsTo
 module Arr = Pulse.Lib.Array
 module GR = Pulse.Lib.GhostReference
@@ -203,10 +204,32 @@ let value (g:gamma_value_t) (vs:list val_t) : slprop =
 (* Per-request linearization ghost: the registry stores the actual
    half-fractional boolean ghost variable name used by request_inv/write_inv. *)
 let lin_ghost_var (gamma_l:Reg.lin_gname) (b:bool) : slprop =
-  GR.pts_to gamma_l #(1.0R /. 2.0R) b
+  GR.pts_to gamma_l.Reg.lin_ref #(1.0R /. 2.0R) b
 
 let request_live_bit (tracked_ver:nat) (request_ver:nat) : GTot bool =
   prop_as_bool (tracked_ver < request_ver)
+
+let request_live_bit_true_of_lt (tracked_ver request_ver:nat)
+  : Lemma
+      (requires tracked_ver < request_ver)
+      (ensures request_live_bit tracked_ver request_ver == true)
+  = ()
+
+let request_live_bit_false_of_not_lt (tracked_ver request_ver:nat)
+  : Lemma
+      (requires ~(tracked_ver < request_ver))
+      (ensures request_live_bit tracked_ver request_ver == false)
+  = ()
+
+let request_live_bit_false_mono (tracked_ver request_ver:nat)
+  : Lemma
+      (requires request_live_bit tracked_ver request_ver == false)
+      (ensures request_live_bit (tracked_ver + 1) request_ver == false)
+  = if request_live_bit (tracked_ver + 1) request_ver then (
+      assert (tracked_ver + 1 < request_ver);
+      assert (tracked_ver < request_ver);
+      assert (request_live_bit tracked_ver request_ver == true)
+    ) else ()
 
 type write_post_t = unit -> slprop
 
@@ -219,11 +242,10 @@ let write_commit_cont (src:array val_t) (dq:perm) (vs:list val_t)
 
 let au_write (phi:write_post_t) (g:gamma_value_t) (vs_new:list val_t)
              (src:array val_t) (dq:perm) : slprop =
-  exists* (tok:au_token emp_inames (list val_t) unit
-            (fun (vs_old:list val_t) -> value g vs_old)
-            (fun (_old:list val_t) (_u:unit) -> value g vs_new)
-            (fun (_old:list val_t) (_u:unit) -> write_commit_cont src dq vs_new phi)).
-    au_available tok
+  CAU.atomic_update #(list val_t) #unit emp_inames
+    (fun (vs_old:list val_t) -> value g vs_old)
+    (fun (_old:list val_t) (_u:unit) -> value g vs_new)
+    (fun (_old:list val_t) (_u:unit) -> write_commit_cont src dq vs_new phi)
 
 type write_lifecycle =
   | WriteLinearized
@@ -257,13 +279,185 @@ let request_inv (g:gamma_value_t) (tracked_ver:nat) (request:Reg.request) : slpr
   let request_ver = snd request in
   lin_ghost_var gamma_l (request_live_bit tracked_ver request_ver) **
   exists* (phi:write_post_t) (gamma_t:request_token_t) (src:array val_t)
-          (dq:perm) (vs_new:list val_t) (i:iname).
-    inv i (write_inv phi g gamma_l gamma_t src dq vs_new)
+          (dq:perm) (vs_new:list val_t).
+    inv gamma_l.Reg.write_i (write_inv phi g gamma_l gamma_t src dq vs_new)
 
 let rec registry_inv (g:gamma_value_t) (tracked_ver:nat) (requests:Reg.registry) : slprop =
   match requests with
   | [] -> emp
   | request::tl -> request_inv g tracked_ver request ** registry_inv g tracked_ver tl
+
+let rec registry_inames (requests:Reg.registry) : Tot inames =
+  match requests with
+  | [] -> emp_inames
+  | request::tl -> add_inv (registry_inames tl) (fst request).Reg.write_i
+
+ghost fn lin_ghost_agree (gamma_l:Reg.lin_gname) (#b0 #b1:bool)
+  preserves lin_ghost_var gamma_l b0 ** lin_ghost_var gamma_l b1
+  ensures pure (b0 == b1)
+{
+  unfold (lin_ghost_var gamma_l b0);
+  unfold (lin_ghost_var gamma_l b1);
+  GR.pts_to_injective_eq gamma_l.Reg.lin_ref;
+  fold (lin_ghost_var gamma_l b0);
+  fold (lin_ghost_var gamma_l b1)
+}
+
+ghost fn lin_ghost_update_halves (gamma_l:Reg.lin_gname) (#b0 #b1:bool) (b:bool)
+  requires lin_ghost_var gamma_l b0 ** lin_ghost_var gamma_l b1
+  ensures lin_ghost_var gamma_l b ** lin_ghost_var gamma_l b ** pure (b0 == b1)
+{
+  lin_ghost_agree gamma_l #b0 #b1;
+  rewrite each b1 as b0;
+  unfold (lin_ghost_var gamma_l b0);
+  unfold (lin_ghost_var gamma_l b0);
+  GR.gather gamma_l.Reg.lin_ref;
+  GR.(gamma_l.Reg.lin_ref := b);
+  GR.share gamma_l.Reg.lin_ref;
+  fold (lin_ghost_var gamma_l b);
+  fold (lin_ghost_var gamma_l b)
+}
+
+ghost fn value_update_halves (g:gamma_value_t) (#vs0 #vs1:list val_t) (vs:list val_t)
+  requires value_auth g vs0 ** value g vs1
+  ensures value_auth g vs ** value g vs ** pure (vs0 == vs1)
+{
+  unfold (value g vs1);
+  unfold (value_auth g vs0);
+  unfold (value_auth g vs1);
+  GR.pts_to_injective_eq g;
+  rewrite each vs1 as vs0;
+  GR.gather g;
+  GR.(g := vs);
+  GR.share g;
+  fold (value_auth g vs);
+  fold (value_auth g vs);
+  fold (value g vs)
+}
+
+ghost fn rec linearize_writes (g:gamma_value_t) (#vs:list val_t)
+    (ver:nat) (requests:Reg.registry)
+  opens (registry_inames requests)
+  requires later_credit (List.length requests) ** value_auth g vs ** registry_inv g ver requests
+  ensures exists* (vs':list val_t). value_auth g vs' ** registry_inv g (ver + 1) requests
+  decreases requests
+{
+  match requests {
+    Nil -> {
+      unfold (registry_inv g ver []);
+      later_credit_zero ();
+      rewrite (later_credit 0) as emp;
+      fold (registry_inv g (ver + 1) []);
+      rewrite (registry_inv g (ver + 1) []) as (registry_inv g (ver + 1) requests);
+      intro_exists #(list val_t)
+        (fun vs' -> value_auth g vs' ** registry_inv g (ver + 1) requests) vs
+    }
+    Cons request tl -> {
+      let gamma_l = fst request;
+      let request_ver = snd request;
+      assert (pure (List.length (request::tl) == 1 + List.length tl));
+      rewrite (later_credit (List.length (request::tl))) as (later_credit (1 + List.length tl));
+      later_credit_add 1 (List.length tl);
+      rewrite (later_credit (1 + List.length tl)) as (later_credit 1 ** later_credit (List.length tl));
+      unfold (registry_inv g ver (request::tl));
+      linearize_writes g #vs ver tl;
+      with vs_tail. _;
+      unfold (request_inv g ver request);
+      with phi gamma_t src dq vs_new. _;
+      rewrite each (fst request) as gamma_l;
+      rewrite each (snd request) as request_ver;
+      with_invariants_g unit emp_inames gamma_l.Reg.write_i
+        (write_inv phi g gamma_l gamma_t src dq vs_new)
+        (value_auth g vs_tail ** lin_ghost_var gamma_l (request_live_bit ver request_ver))
+        (fun _ -> exists* (vs_final:list val_t).
+           value_auth g vs_final ** lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver))
+        fn _ {
+          unfold (write_inv phi g gamma_l gamma_t src dq vs_new);
+          with state. _;
+          let state0 = reveal state;
+          match state0 {
+            WriteLinearized -> {
+              rewrite (write_inv_state phi g gamma_l gamma_t src dq vs_new state) as
+                (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteLinearized);
+              unfold (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteLinearized);
+              lin_ghost_agree gamma_l #(request_live_bit ver request_ver) #false;
+              rewrite each (request_live_bit ver request_ver) as false;
+              request_live_bit_false_mono ver request_ver;
+              fold (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteLinearized);
+              fold (write_inv phi g gamma_l gamma_t src dq vs_new);
+              rewrite (lin_ghost_var gamma_l false) as
+                (lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver));
+              intro_exists #(list val_t)
+                (fun vs_final -> value_auth g vs_final ** lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver)) vs_tail
+            }
+            WritePending -> {
+              rewrite (write_inv_state phi g gamma_l gamma_t src dq vs_new state) as
+                (write_inv_state phi g gamma_l gamma_t src dq vs_new WritePending);
+              unfold (write_inv_state phi g gamma_l gamma_t src dq vs_new WritePending);
+              lin_ghost_agree gamma_l #(request_live_bit ver request_ver) #true;
+              rewrite each (request_live_bit ver request_ver) as true;
+              if (ver + 1 < request_ver) {
+                request_live_bit_true_of_lt (ver + 1) request_ver;
+                fold (write_inv_state phi g gamma_l gamma_t src dq vs_new WritePending);
+                fold (write_inv phi g gamma_l gamma_t src dq vs_new);
+                rewrite (lin_ghost_var gamma_l true) as
+                  (lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver));
+                intro_exists #(list val_t)
+                  (fun vs_final -> value_auth g vs_final ** lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver)) vs_tail
+              } else {
+                request_live_bit_false_of_not_lt (ver + 1) request_ver;
+                lin_ghost_update_halves gamma_l #true #true false;
+                unfold (au_write phi g vs_new src dq);
+                let vs_old = CAU.au_open #(list val_t) #unit emp_inames
+                  (fun (vs_old:list val_t) -> value g vs_old)
+                  (fun (_old:list val_t) (_u:unit) -> value g vs_new)
+                  (fun (_old:list val_t) (_u:unit) -> write_commit_cont src dq vs_new phi);
+                value_update_halves g #vs_tail #(reveal vs_old) vs_new;
+                CAU.au_commit #(list val_t) #unit emp_inames
+                  (fun (vs_old:list val_t) -> value g vs_old)
+                  (fun (_old:list val_t) (_u:unit) -> value g vs_new)
+                  (fun (_old:list val_t) (_u:unit) -> write_commit_cont src dq vs_new phi)
+                  (reveal vs_old) ();
+                drop_ (Trade.trade #emp_inames (value g (reveal vs_old))
+                  (CAU.atomic_update #(list val_t) #unit emp_inames
+                    (fun (vs_old:list val_t) -> value g vs_old)
+                    (fun (_old:list val_t) (_u:unit) -> value g vs_new)
+                    (fun (_old:list val_t) (_u:unit) -> write_commit_cont src dq vs_new phi)));
+                drop_ (later_credit 1);
+                fold (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteLinearized);
+                fold (write_inv phi g gamma_l gamma_t src dq vs_new);
+                rewrite (lin_ghost_var gamma_l false) as
+                  (lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver));
+                intro_exists #(list val_t)
+                  (fun vs_final -> value_auth g vs_final ** lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver)) vs_new
+              }
+            }
+            WriteReturned -> {
+              rewrite (write_inv_state phi g gamma_l gamma_t src dq vs_new state) as
+                (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteReturned);
+              unfold (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteReturned);
+              with b. _;
+              let b0 = reveal b;
+              rewrite (lin_ghost_var gamma_l b) as (lin_ghost_var gamma_l b0);
+              lin_ghost_update_halves gamma_l #(request_live_bit ver request_ver) #b0 (request_live_bit (ver + 1) request_ver);
+              fold (write_inv_state phi g gamma_l gamma_t src dq vs_new WriteReturned);
+              fold (write_inv phi g gamma_l gamma_t src dq vs_new);
+              intro_exists #(list val_t)
+                (fun vs_final -> value_auth g vs_final ** lin_ghost_var gamma_l (request_live_bit (ver + 1) request_ver)) vs_tail
+            }
+          }
+        };
+      with vs_final. _;
+      rewrite each gamma_l as (fst request);
+      rewrite each request_ver as (snd request);
+      fold (request_inv g (ver + 1) request);
+      fold (registry_inv g (ver + 1) (request::tl));
+      rewrite (registry_inv g (ver + 1) (request::tl)) as (registry_inv g (ver + 1) requests);
+      intro_exists #(list val_t)
+        (fun vs' -> value_auth g vs' ** registry_inv g (ver + 1) requests) vs_final
+    }
+  }
+}
 
 (* The big invariant content: conditional on parity of the physical version. *)
 let seqlock_inv_body (gver:MGR.mref mono_nat_increases) (gh:gname val_t)
