@@ -3,6 +3,7 @@ module Pulse.Lib.SeqlockWfRegistry
 open Pulse.Lib.Pervasives
 module List = FStar.List.Tot
 open FStar.List.Tot { (@) }
+module GR = Pulse.Lib.GhostReference
 module MGR = Pulse.Lib.MonotonicGhostRef
 
 let rec prefix (#a:Type0) (xs ys:list a) : Tot prop =

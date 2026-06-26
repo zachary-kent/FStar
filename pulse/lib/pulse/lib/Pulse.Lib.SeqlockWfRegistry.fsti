@@ -3,11 +3,11 @@ module Pulse.Lib.SeqlockWfRegistry
 open Pulse.Lib.Pervasives
 module List = FStar.List.Tot
 open FStar.List.Tot { (@) }
+module GR = Pulse.Lib.GhostReference
 
-(* Per-request linearization ghost-name token.
-   We keep the carrier erased: future clients can tie it to the concrete
-   ghost-variable name representation they allocate for write_inv. *)
-type lin_gname = erased nat
+(* Per-request linearization ghost variable name.  The registry stores the
+   actual half-fractional bool ghost reference used by request_inv/write_inv. *)
+type lin_gname = GR.ref bool
 
 type request = lin_gname & nat
 
