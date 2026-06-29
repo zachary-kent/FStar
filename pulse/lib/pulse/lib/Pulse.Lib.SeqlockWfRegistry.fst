@@ -81,23 +81,23 @@ let registry_auth (g:reg_gname) (q:perm) (requests:registry) : slprop =
   MGR.pts_to #registry #registry_preorder g #q requests
 
 [@@pulse_unfold]
-let registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry) : slprop =
+let registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry) : slprop =
   MGR.snapshot #registry #registry_preorder g snap **
-  pure (List.nth snap i == Some (gamma_l, ver))
+  pure (List.nth snap i == Some (gamma_l, ver, write_i))
 
-ghost fn registered_dup (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry)
-  requires registered g i gamma_l ver #snap
-  ensures registered g i gamma_l ver #snap ** registered g i gamma_l ver #snap
+ghost fn registered_dup (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry)
+  requires registered g i gamma_l ver write_i #snap
+  ensures registered g i gamma_l ver write_i #snap ** registered g i gamma_l ver write_i #snap
 {
-  unfold (registered g i gamma_l ver #snap);
+  unfold (registered g i gamma_l ver write_i #snap);
   dup (MGR.snapshot #registry #registry_preorder g snap) ();
-  fold (registered g i gamma_l ver #snap);
-  fold (registered g i gamma_l ver #snap)
+  fold (registered g i gamma_l ver write_i #snap);
+  fold (registered g i gamma_l ver write_i #snap)
 }
 
-instance duplicable_registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry)
-  : duplicable (registered g i gamma_l ver #snap) =
-  { dup_f = fun _ -> registered_dup g i gamma_l ver #snap }
+instance duplicable_registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry)
+  : duplicable (registered g i gamma_l ver write_i #snap) =
+  { dup_f = fun _ -> registered_dup g i gamma_l ver write_i #snap }
 
 ghost fn registry_alloc (_:unit)
   requires emp
@@ -157,44 +157,46 @@ ghost fn registry_auth_auth_agree (g:reg_gname) (#q1 #q2:perm) (#r1 #r2:registry
   registry_auth_auth_agree_core g
 }
 
-ghost fn registry_extend (g:reg_gname) (#requests:registry) (gamma_l:lin_gname) (ver:nat)
+ghost fn registry_extend (g:reg_gname) (#requests:registry) (gamma_l:lin_gname) (ver:nat) (write_i:iname)
   requires registry_auth g 1.0R requests
-  ensures registry_auth g 1.0R (requests @ [(gamma_l, ver)]) **
-          registered g (List.length requests) gamma_l ver #(requests @ [(gamma_l, ver)])
+  ensures registry_auth g 1.0R (requests @ [(gamma_l, ver, write_i)]) **
+          registered g (List.length requests) gamma_l ver write_i #(requests @ [(gamma_l, ver, write_i)])
 {
   unfold (registry_auth g 1.0R requests);
-  let requests' = requests @ [(gamma_l, ver)];
-  prefix_append requests [(gamma_l, ver)];
+  let request = (gamma_l, ver, write_i);
+  let requests' = requests @ [request];
+  prefix_append requests [request];
   assert pure (registry_preorder requests requests');
   MGR.update #registry #registry_preorder g #requests requests';
   MGR.take_snapshot #registry #registry_preorder g #1.0R requests';
-  nth_append_length requests (gamma_l, ver);
-  rewrite each requests' as (requests @ [(gamma_l, ver)]);
-  fold (registry_auth g 1.0R (requests @ [(gamma_l, ver)]));
-  fold (registered g (List.length requests) gamma_l ver #(requests @ [(gamma_l, ver)]))
+  nth_append_length requests request;
+  rewrite each request as (gamma_l, ver, write_i);
+  rewrite each requests' as (requests @ [(gamma_l, ver, write_i)]);
+  fold (registry_auth g 1.0R (requests @ [(gamma_l, ver, write_i)]));
+  fold (registered g (List.length requests) gamma_l ver write_i #(requests @ [(gamma_l, ver, write_i)]))
 }
 
 ghost fn registered_alloc (g:reg_gname) (#q:perm) (#requests:registry)
-    (i:nat) (gamma_l:lin_gname) (ver:nat)
-  requires registry_auth g q requests ** pure (List.nth requests i == Some (gamma_l, ver))
-  ensures registry_auth g q requests ** registered g i gamma_l ver #requests
+    (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname)
+  requires registry_auth g q requests ** pure (List.nth requests i == Some (gamma_l, ver, write_i))
+  ensures registry_auth g q requests ** registered g i gamma_l ver write_i #requests
 {
   unfold (registry_auth g q requests);
   MGR.take_snapshot #registry #registry_preorder g #q requests;
   fold (registry_auth g q requests);
-  fold (registered g i gamma_l ver #requests)
+  fold (registered g i gamma_l ver write_i #requests)
 }
 
 ghost fn registry_auth_frag_agree (g:reg_gname) (#q:perm) (#requests:registry)
-    (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry)
-  requires registry_auth g q requests ** registered g i gamma_l ver #snap
-  ensures registry_auth g q requests ** registered g i gamma_l ver #snap **
-          pure (List.nth requests i == Some (gamma_l, ver))
+    (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry)
+  requires registry_auth g q requests ** registered g i gamma_l ver write_i #snap
+  ensures registry_auth g q requests ** registered g i gamma_l ver write_i #snap **
+          pure (List.nth requests i == Some (gamma_l, ver, write_i))
 {
   unfold (registry_auth g q requests);
-  unfold (registered g i gamma_l ver #snap);
+  unfold (registered g i gamma_l ver write_i #snap);
   MGR.recall_snapshot #registry #registry_preorder g #q #requests #snap;
-  prefix_nth snap requests i (gamma_l, ver);
+  prefix_nth snap requests i (gamma_l, ver, write_i);
   fold (registry_auth g q requests);
-  fold (registered g i gamma_l ver #snap)
+  fold (registered g i gamma_l ver write_i #snap)
 }

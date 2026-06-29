@@ -5,16 +5,12 @@ module List = FStar.List.Tot
 open FStar.List.Tot { (@) }
 module GR = Pulse.Lib.GhostReference
 
-(* Per-request linearization ghost name.  The registry stores the actual
-   half-fractional bool ghost reference used by request_inv/write_inv, plus
+(* Per-request linearization ghost name.  The registry stores this
+   half-fractional bool ghost reference together with the target version and
    the concrete Pulse invariant name for this request's write_inv. *)
-unopteq
-type lin_gname = {
-  lin_ref : GR.ref bool;
-  write_i : iname;
-}
+type lin_gname = GR.ref bool
 
-type request = lin_gname & nat
+type request = lin_gname & nat & iname
 
 type registry = list request
 
@@ -31,17 +27,17 @@ val registry_auth (g:reg_gname) (q:perm) (requests:registry) : slprop
    The hidden snapshot parameter is inferred from the operation that produced
    the fragment; agreement with current authority follows from prefix monotonicity. *)
 [@@allow_ambiguous]
-val registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry) : slprop
+val registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry) : slprop
 
 (* Explicit duplicability operation for clients that prefer not to use dup. *)
-ghost fn registered_dup (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry)
-  requires registered g i gamma_l ver #snap
-  ensures registered g i gamma_l ver #snap ** registered g i gamma_l ver #snap
+ghost fn registered_dup (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry)
+  requires registered g i gamma_l ver write_i #snap
+  ensures registered g i gamma_l ver write_i #snap ** registered g i gamma_l ver write_i #snap
 
 (* registered fragments are duplicable. *)
 [@@erasable]
-instance val duplicable_registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry)
-  : duplicable (registered g i gamma_l ver #snap)
+instance val duplicable_registered (g:reg_gname) (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry)
+  : duplicable (registered g i gamma_l ver write_i #snap)
 
 (* Allocate an empty registry; return full authority. *)
 ghost fn registry_alloc (_:unit)
@@ -66,20 +62,20 @@ ghost fn registry_auth_auth_agree (g:reg_gname) (#q1 #q2:perm) (#r1 #r2:registry
   ensures pure (r1 == r2)
 
 (* Extend: append a new request. Returns a fragment at the new index. *)
-ghost fn registry_extend (g:reg_gname) (#requests:registry) (gamma_l:lin_gname) (ver:nat)
+ghost fn registry_extend (g:reg_gname) (#requests:registry) (gamma_l:lin_gname) (ver:nat) (write_i:iname)
   requires registry_auth g 1.0R requests
-  ensures registry_auth g 1.0R (requests @ [(gamma_l, ver)]) **
-          registered g (List.length requests) gamma_l ver #(requests @ [(gamma_l, ver)])
+  ensures registry_auth g 1.0R (requests @ [(gamma_l, ver, write_i)]) **
+          registered g (List.length requests) gamma_l ver write_i #(requests @ [(gamma_l, ver, write_i)])
 
 (* From auth at any fraction: derive a fragment for an existing index. *)
 ghost fn registered_alloc (g:reg_gname) (#q:perm) (#requests:registry)
-    (i:nat) (gamma_l:lin_gname) (ver:nat)
-  requires registry_auth g q requests ** pure (List.nth requests i == Some (gamma_l, ver))
-  ensures registry_auth g q requests ** registered g i gamma_l ver #requests
+    (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname)
+  requires registry_auth g q requests ** pure (List.nth requests i == Some (gamma_l, ver, write_i))
+  ensures registry_auth g q requests ** registered g i gamma_l ver write_i #requests
 
 (* Frag/auth agreement: index i lookup matches the fragment. *)
 ghost fn registry_auth_frag_agree (g:reg_gname) (#q:perm) (#requests:registry)
-    (i:nat) (gamma_l:lin_gname) (ver:nat) (#snap:registry)
-  requires registry_auth g q requests ** registered g i gamma_l ver #snap
-  ensures registry_auth g q requests ** registered g i gamma_l ver #snap **
-          pure (List.nth requests i == Some (gamma_l, ver))
+    (i:nat) (gamma_l:lin_gname) (ver:nat) (write_i:iname) (#snap:registry)
+  requires registry_auth g q requests ** registered g i gamma_l ver write_i #snap
+  ensures registry_auth g q requests ** registered g i gamma_l ver write_i #snap **
+          pure (List.nth requests i == Some (gamma_l, ver, write_i))
