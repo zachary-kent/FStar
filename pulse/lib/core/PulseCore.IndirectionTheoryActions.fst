@@ -17,6 +17,8 @@ module PulseCore.IndirectionTheoryActions
 open PulseCore.IndirectionTheorySep
 open Pulse.Lib.Loc
 module PM = PulseCore.MemoryAlt
+module NS = PulseCore.Namespace
+
 module B = PulseCore.BaseHeapSig
 open FStar.Ghost
 
@@ -415,6 +417,53 @@ let fresh_invariant (e:inames) (p:slprop) (ctx:inames { Pulse.Lib.GhostSet.is_fi
     disjoint_join_levels s0 s0';
     assert (level s0 == level s0');
     i, s1
+
+let fresh_invariant_in_namespace
+    (n:NS.namespace)
+    (e:inames)
+    (p:slprop)
+    (ctx:inames { Pulse.Lib.GhostSet.is_finite ctx })
+: ghost_act (i:iref{NS.member n i /\ ~(GhostSet.mem i ctx)}) e p (fun i -> inv i p)
+= fun frame s0 ->
+    sep_laws();
+    destruct_star_l (inames_live ctx) (p `star` frame `star` mem_invariant e s0) s0;
+    let (| i, s0' |) = fresh_inv_in_namespace n p s0 ctx in
+    let s1 = join_mem s0 s0' in
+    disjoint_join_levels s0 s0';
+    mem_invariant_disjoint e (single i) (p `star` frame) (inv i p) s0 s0';
+    assert (interp
+              ((p `star` frame) `star` inv i p `star`
+                (mem_invariant (GhostSet.union e (single i)) s1))
+              s1);
+    assert (GhostSet.union e (single i) `GhostSet.equal` (add_inv e i));
+    inames_ok_hogs_dom e s0;
+    inames_ok_hogs_dom (single i) s0';
+    assert (~(mem_inv e i));
+    assert (interp
+              (inv i p `star`
+              (frame `star` p `star` mem_invariant (add_inv e i) s1))
+              s1);
+    destruct_star_l (inv i p)
+                    (frame `star` p `star` mem_invariant (add_inv e i) s1)
+                    s1;
+    inames_ok_single i p s1;
+    assert (iname_ok i s1);
+    intro_read_inv_later i p (frame `star` mem_invariant (add_inv e i) s1) s1;
+    assert (interp (inv i p `star`
+                    frame `star`
+                    (mem_invariant (add_inv e i) s1 `star`
+                    read_inv i s1)) s1);
+    mem_invariant_equiv e s1 i;
+    assert (interp (inv i p `star` frame `star` mem_invariant e s1) s1);
+    assert (is_ghost_action s0 s1);
+    inames_ok_disjoint e (single i) s0 s0';
+    inames_ok_union e (single i) s1;
+    assert (inames_ok e s1);
+    assert (is_full s1);
+    disjoint_join_levels s0 s0';
+    assert (level s0 == level s0');
+    i, s1
+
 
 let new_invariant (e:inames) (p:slprop)
 : ghost_act iref e p (fun i -> inv i p)

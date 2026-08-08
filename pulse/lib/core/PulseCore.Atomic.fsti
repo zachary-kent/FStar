@@ -23,6 +23,8 @@ open PulseCore.Action
 open PulseCore.Observability
 open Pulse.Lib.Loc
 module Sep = PulseCore.IndirectionTheorySep
+module NS = PulseCore.Namespace
+
 (* stt_unobservable a opens pre post: The type of a pulse computation
    that when run in a state satisfying `pre`
    takes an unobservable atomic step
@@ -249,6 +251,16 @@ val fresh_invariant (ctx:inames { Pulse.Lib.GhostSet.is_finite ctx }) (p:slprop)
 
 val inames_live_inv (i:iref) (p:slprop)
 : stt_ghost unit emp_inames (inv i p) (fun _ -> inv i p ** Sep.inames_live (singleton i))
+
+val fresh_invariant_in_namespace
+    (n:NS.namespace)
+    (ctx:inames { Pulse.Lib.GhostSet.is_finite ctx })
+    (p:slprop)
+: stt_ghost
+    (i:iref { NS.member n i /\ ~(GhostSet.mem i ctx) })
+    emp_inames
+    p
+    (fun i -> inv i p)
 
 val with_invariant
     (#a:Type)

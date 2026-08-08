@@ -1,6 +1,8 @@
 module PulseCore.IndirectionTheoryActions
 module PM = PulseCore.MemoryAlt
 module HST = PulseCore.HoareStateMonad
+module NS = PulseCore.Namespace
+
 open PulseCore.IndirectionTheorySep
 open Pulse.Lib.Loc
 
@@ -65,6 +67,18 @@ val fresh_invariant (e:inames) (p:slprop) (ctx:inames { Pulse.Lib.GhostSet.is_fi
    e
    p
    (fun i -> inv i p)
+
+val fresh_invariant_in_namespace
+    (n:NS.namespace)
+    (e:inames)
+    (p:slprop)
+    (ctx:inames { Pulse.Lib.GhostSet.is_finite ctx })
+: ghost_act
+   (i:iref{NS.member n i /\ ~(GhostSet.mem i ctx)})
+   e
+   p
+   (fun i -> inv i p)
+
 
 val new_invariant (e:inames) (p:slprop)
 : ghost_act iref e p (fun i -> inv i p)

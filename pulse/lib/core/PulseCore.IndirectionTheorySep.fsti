@@ -18,6 +18,10 @@ module PulseCore.IndirectionTheorySep
 module F = FStar.FunctionalExtensionality
 module PM = PulseCore.MemoryAlt
 module B = PulseCore.BaseHeapSig
+module KI = PulseCore.KnotInstantiation
+module NS = PulseCore.Namespace
+module GS = Pulse.Lib.GhostSet
+open PulseCore.KnotInstantiation
 open Pulse.Lib.Loc
 open FStar.Ghost 
 
@@ -257,8 +261,9 @@ val on_equiv_eq l a b : squash (on l (equiv a b) == equiv a b)
 val on_lift_eq l p : squash (on l (lift p) == lift p)
 
 (**** Memory invariants *)
-[@@erasable]
-val iref : Type0
+[@@ erasable] let iref : Type0 = KI.address
+
+val read (m:mem) (i:iref) : KI.hogs_val
 
 val inv (i:iref) (p:slprop) : slprop
 
@@ -471,6 +476,26 @@ val fresh_inv
     FStar.GhostSet.disjoint (hogs_dom m) (hogs_dom m') /\
     timeless_mem_of m' == B.empty_mem /\
     credits m' == 0
+  }
+
+val fresh_inv_in_namespace
+    (n:NS.namespace)
+    (p:slprop)
+    (m:mem)
+    (ctx:inames { GS.is_finite ctx })
+: i:iref &
+  m':mem {
+    NS.member n i
+    /\ None? (read m i)
+    /\ not (GS.mem i ctx)
+    /\ disjoint m m'
+    /\ is_ghost_action m (join_mem m m')
+    /\ timeless_mem_of (join_mem m m') == timeless_mem_of m
+    /\ inames_ok (single i) m'
+    /\ interp (inv i p `star` mem_invariant (single i) m') m'
+    /\ GS.disjoint (hogs_dom m) (hogs_dom m')
+    /\ timeless_mem_of m' == B.empty_mem
+    /\ credits m' == 0
   }
 
 val dup_inv_equiv :

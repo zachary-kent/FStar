@@ -391,6 +391,9 @@ let fresh_invariant ctx p = lift_pre_act0_act fun #ictx -> ITA.fresh_invariant i
 
 let inames_live_inv (i:iref) (p:slprop) = lift_pre_act0_act fun #ictx -> ITA.inames_live_inv ictx i p
 
+let fresh_invariant_in_namespace n ctx p =
+  lift_pre_act0_act fun #ictx -> ITA.fresh_invariant_in_namespace n ictx p ctx
+
 let with_invariant #a #r #fp #fp' #f_opens #p i f =
   fun #ictx ->
   let ictx' = Sep.add_inv ictx i in

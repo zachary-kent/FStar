@@ -274,6 +274,9 @@ let fresh_invariant ctx p = lift_neutral_ghost (A.fresh_invariant ctx p)
 
 let inames_live_inv (i:iref) (p:slprop) = lift_neutral_ghost (A.inames_live_inv i p)
 
+let fresh_invariant_in_namespace n ctx p =
+  lift_neutral_ghost (A.fresh_invariant_in_namespace n ctx p)
+
 let with_invariant #a #fp #fp' #f_opens #p i $f =
   A.with_invariant i f
 

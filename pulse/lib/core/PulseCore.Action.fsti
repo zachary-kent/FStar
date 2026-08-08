@@ -19,6 +19,8 @@ module PulseCore.Action
 module I = PulseCore.InstantiatedSemantics
 module Sep = PulseCore.IndirectionTheorySep
 open FStar.PCM
+module NS = PulseCore.Namespace
+
 open FStar.Ghost
 open Pulse.Lib.Loc
 
@@ -146,6 +148,12 @@ val fresh_invariant (ctx:inames { Pulse.Lib.GhostSet.is_finite ctx }) (p:slprop)
 
 val inames_live_inv (i:iref) (p:slprop)
 : act unit Ghost emp_inames (inv i p) (fun _ -> inv i p ** Sep.inames_live (singleton i))
+
+val fresh_invariant_in_namespace
+    (n:NS.namespace)
+    (ctx:inames { Pulse.Lib.GhostSet.is_finite ctx })
+    (p:slprop)
+: act (i:iref { NS.member n i /\ ~(GhostSet.mem i ctx) }) Ghost emp_inames p (fun i -> inv i p)
 
 val with_invariant
     (#a:Type)
