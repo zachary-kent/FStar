@@ -15,6 +15,7 @@
 *)
 
 module Pulse.Lib.Core
+module NST = PulseCore.NondeterministicHoareStateMonad
 open FStar.Ghost
 open PulseCore.FractionalPermission
 open PulseCore.Observability
@@ -374,6 +375,234 @@ val lift_atomic
   (e:stt_atomic a #obs opens pre post)
 : stt a pre post
 
+(** Consume the active NewProph id-allocation cursor and return a globally fresh
+    prophecy identifier for this execution.  The cursor is separate from both
+    angelic choices and Resolve observations. *)
+val fresh_prophecy_id ()
+  : stt nat emp (fun _ -> emp)
+
+(** Ghost-only cursor package for NewProph rules that must update a
+    prophecy-map-style state interpretation at the same observation tape and
+    counter used by the executable fresh-id step.  The tape/counter fields are
+    erased and are exposed only to trusted/core prophecy plumbing. *)
+noeq type prophecy_cursor = {
+  prophecy_cursor_id: nat;
+  prophecy_cursor_tape: erased NST.obs_tape;
+  prophecy_cursor_ctr: erased NST.ctr;
+  prophecy_cursor_current: squash (prophecy_cursor_id == NST.prophecy_index (reveal prophecy_cursor_ctr));
+}
+
+(** Consume the active NewProph id-allocation cursor and expose, in erased form,
+    the exact observation tape/counter whose prophecy-id cursor is being
+    advanced.  This is the public-core seam needed to route NewProph allocation
+    through active state-interpretation authority rather than a post-hoc local
+    token allocation. *)
+val fresh_prophecy_id_with_obs_ctr ()
+  : stt prophecy_cursor emp (fun _ -> emp)
+
+(** State-action NewProph hidden-state bridge.  The allocation callback is a
+    single neutral atomic action, so the prophecy-aware runner can consume the
+    fresh-id cursor, run allocation under [si ot c], and close [si] at
+    [NST.bump_prophecy c] in one active semantic step. *)
+val fresh_prophecy_id_with_hidden_si_state_action
+    (#a:Type u#a)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (#post:a -> slprop)
+    (alloc:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      stt_atomic a #Neutral emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+  : stt a emp post
+
+(** Opaque Core-level certificate that a FreshProph hidden-state action has
+    been packaged for the active prophecy-id/counter runner.  The concrete
+    implementation is [PulseCore.Semantics.active_run_result], kept abstract
+    here because [slprop] itself is abstract in this interface. *)
+val fresh_prophecy_id_active_run_result
+    (#a:Type u#a)
+    (post:a -> slprop)
+    (si:NST.obs_tape -> NST.ctr -> slprop)
+    (frame:slprop)
+    (fuel:pos)
+  : Type u#4
+
+(** Adequacy-facing active execution path for the same Ret-specialized
+    FreshProph hidden-state lowering.  This public Core certificate packages the
+    allocation callback for the active prophecy-id/counter runner, so callers
+    that own [si ot c0] can dispatch the public NewProph shape through the
+    non-diverging active runner instead of the ordinary hidden-state branches. *)
+val fresh_prophecy_id_with_hidden_si_state_action_active_run
+    (#a:Type u#a)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (#post:a -> slprop)
+    (alloc:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      stt_atomic a #Neutral emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+    (frame:slprop)
+    (fuel:pos)
+  : fresh_prophecy_id_active_run_result #a post si frame fuel
+
+
+(** Lift an observable atomic action through the semantic observation tape and
+    continue with access to both the physical result and the decoded
+    result-dependent observation.  This is the explicit [ObservedResultAct]
+    bridge needed for Iris-style prophecy Resolve plumbing. *)
+val lift_atomic_observed_result_cont
+    (#a:Type u#a)
+    (#obs:a -> Type u#100)
+    (#b:Type u#b)
+    (decode_obs:(x:a -> nat -> obs x))
+    (#opens:inames)
+    (#pre:slprop)
+    (#mid:a -> slprop)
+    (#post:b -> slprop)
+    (e:stt_atomic a #Observable opens pre mid)
+    (k:(x:a -> obs x -> stt b (mid x) post))
+: stt b pre post
+
+(** Hidden-state observed-result bridge for Iris-style Resolve rules.  The
+    continuation sees the physical result, decoded observation, erased active
+    observation tape/counter, and a hidden state interpretation [si_pre]; it
+    must close [si_post] at [NST.bump_observation c].  Ordinary clients do not
+    own these hidden resources in their public pre/post. *)
+val lift_atomic_observed_result_cont_hidden_state
+    (#a:Type u#a)
+    (#obs:a -> Type u#100)
+    (#b:Type u#b)
+    (decode_obs:(x:a -> nat -> obs x))
+    (#opens:inames)
+    (#pre:slprop)
+    (#mid:a -> slprop)
+    (#post:b -> slprop)
+    (#si_pre:(x:a -> obs x -> NST.obs_tape -> NST.ctr -> slprop))
+    (#si_post:(x:a -> obs x -> NST.obs_tape -> NST.ctr -> slprop))
+    (e:stt_atomic a #Observable opens pre mid)
+    (k:(x:a -> observed_nat:nat -> o:obs x { o == decode_obs x observed_nat } ->
+      #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      stt b (mid x ** si_pre x o (reveal ot) (reveal c))
+        (fun y -> post y ** si_post x o (reveal ot) (NST.bump_observation (reveal c)))))
+: stt b pre post
+
+(** Native active observed-result hidden-state action.  The callback is the
+    whole observable action run under runner-owned [si ot c]; this lowers to the
+    Ret-specialized [ObservedResultActWithHiddenStateReturnAction] so the active
+    runner consumes the current observation, closes [si] at
+    [NST.bump_observation c], and can return the final value directly. *)
+val lift_atomic_observed_result_hidden_state_action
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (PulseCore.Semantics.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (PulseCore.Semantics.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (PulseCore.Action.observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      stt_atomic a #Observable emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+: stt a pre post
+
+(** Two-stage target-fixed variant used by public Resolve.  Unlike the
+    internal one-action targeted lowering, this public API does not hand a
+    callback a free [x -> Resolve-event] capability; the receipt is supplied
+    only to the post-result finisher after the physical observable action has
+    returned the actual [x]. *)
+(** Two-stage target-fixed variant: the callback returns a physical action and
+    a post-result finisher.  The active runner mints the Resolve receipt only
+    after the physical action returns the actual [x]. *)
+val lift_targeted_post_result_observed_result_hidden_state_action
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:stt_atomic resolve_result #Observable emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (PulseCore.Action.observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         stt_atomic unit #Neutral emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+: stt resolve_result pre post
+
+(** Opaque Core-level certificate that an observed-result hidden-state action
+    has been packaged for the active observation/counter runner.  The concrete
+    implementation is [PulseCore.Semantics.active_observed_run_result], kept
+    abstract here because [slprop] itself is abstract in this interface. *)
+val observed_result_active_run_result
+    (#a:Type u#a)
+    (pre:slprop)
+    (post:a -> slprop)
+    (si:NST.obs_tape -> NST.ctr -> slprop)
+    (frame:slprop)
+    (fuel:pos)
+  : Type u#4
+
+(** Adequacy-facing active execution path for the same Ret-specialized
+    observed-result lowering.  This public Core certificate packages the
+    callback for the active observation/counter runner, so callers that own
+    [si ot c0] can dispatch the public Resolve shape through the non-diverging
+    active runner instead of the ordinary hidden-state branches. *)
+val observed_result_hidden_state_action_active_run
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (PulseCore.Semantics.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (PulseCore.Semantics.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (PulseCore.Action.observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      stt_atomic a #Observable emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+    (frame:slprop)
+    (fuel:pos)
+  : observed_result_active_run_result #a pre post si frame fuel
+
+val observed_result_targeted_post_result_hidden_state_action_active_run
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:stt_atomic resolve_result #Observable emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (PulseCore.Action.observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         stt_atomic unit #Neutral emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+    (frame:slprop)
+    (fuel:pos)
+  : observed_result_active_run_result #resolve_result pre post si frame fuel
+
+
 //////////////////////////////////////////////////////////////////////////
 // Ghost computations
 //////////////////////////////////////////////////////////////////////////
@@ -691,6 +920,68 @@ val unreachable (_:squash False)
 val as_atomic (#a:Type u#0) (pre:slprop) (post:a -> slprop)
               (pf:stt a pre post)
 : stt_atomic a emp_inames pre post
+
+(** Narrow atomic presentation primitive for active observed-result hidden-state
+    actions.  Unlike generic [as_atomic], this contract only presents a single
+    Ret-specialized [ObservedResultActWithHiddenStateReturnAction]-shaped
+    lowering as [stt_atomic]: public [pre]/[post] stay unchanged while the
+    active runner owns [si ot c] and advances it to [si ot
+    (NST.bump_observation c)].  Its implementation is a scoped primitive
+    boundary for this action shape, not a coercion of an arbitrary [stt] proof
+    through [as_atomic].  The implementation also constructs the checked
+    active-runner certificate for the same callback before using the primitive
+    presentation boundary, so the shape is tied to the non-diverging active
+    observed-result runner.  The boundary is deliberately restricted to
+    callbacks with [emp_inames]; callers must open invariants around the
+    resulting atomic action rather than hide invariant-open effects inside this
+    presentation step. *)
+val lift_atomic_observed_result_hidden_state_action_atomic
+    (#a:Type0)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (PulseCore.Semantics.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (PulseCore.Semantics.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (PulseCore.Action.observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      stt_atomic a #Observable emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+: stt_atomic a #Observable emp_inames pre post
+
+(** Target-fixed two-stage variant of the presentation boundary above.
+    The physical observable action runs first; the runner then mints the
+    target/result-indexed Resolve receipt for the actual [x] and calls the
+    neutral finisher.  This is the only public Resolve atomic-presentation shim:
+    it does not supply decoder facts, update prophecy resources, or coerce an
+    arbitrary [stt].  The implementation constructs the corresponding checked
+    active-runner certificate before using the primitive presentation boundary. *)
+val lift_atomic_targeted_post_result_observed_result_hidden_state_action_atomic
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:stt_atomic resolve_result #Observable emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (PulseCore.Action.observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         stt_atomic unit #Neutral emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+: stt_atomic resolve_result #Observable emp_inames pre post
 
 (* Some syntactic sugar for iname sets. *)
 

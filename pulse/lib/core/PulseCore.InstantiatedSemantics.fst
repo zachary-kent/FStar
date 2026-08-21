@@ -19,6 +19,7 @@ module Sem = PulseCore.Semantics
 module Sep = PulseCore.IndirectionTheorySep
 module F = FStar.FunctionalExtensionality
 
+open FStar.Ghost
 open PulseCore.IndirectionTheorySep
 
 let laws ()
@@ -138,3 +139,140 @@ let fork f0 = fun _ -> Sem.fork (f0 ())
 let hide_div #a #pre #post (f:unit -> Dv (stt a pre post))
 : stt a pre post
 = fun _ -> f () ()
+
+(** Adequacy-facing active NewProph runner for instantiated Pulse [stt]
+    computations.
+
+    This is the instantiated-semantics entry point for the Ret-specialized
+    hidden-state NewProph lowering used by [Pulse.Lib.Core].  It unwraps the
+    public [stt] thunk and dispatches to [Sem.run_active_new_proph_ret], so the
+    public NewProph primitive can be validated through the active runner that
+    owns the observation-tape/counter-indexed state interpretation rather than
+    through the ordinary counter-erased [Sem.run] branch. *)
+let run_active_new_proph_ret (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (e:stt a pre post)
+    (frame:slprop)
+    (fuel:pos)
+  : Dv (option (Sem.active_run_result #state a (F.on_dom a post) frame fuel pre))
+= let f = e () in
+  Sem.run_active_new_proph_ret f frame fuel
+
+(** Concrete instantiated execution of the Ret-specialized active NewProph
+    constructor.  This is the adequacy-facing path used by the public
+    hidden-state NewProph primitive after its syntax has been lowered: the
+    caller starts with [si ot c0] in the state interpretation, the runner calls
+    the active allocation action, and the returned counter is
+    [NST.bump_prophecy c0]. *)
+let run_active_new_proph_return_action_with_ctr (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (si:PulseCore.NondeterministicHoareStateMonad.obs_tape -> PulseCore.NondeterministicHoareStateMonad.ctr -> slprop)
+    (alloc:(pid:nat -> ot:PulseCore.NondeterministicHoareStateMonad.obs_tape ->
+      c:PulseCore.NondeterministicHoareStateMonad.ctr{pid == PulseCore.NondeterministicHoareStateMonad.prophecy_index c} ->
+      (b:Type u#100 &
+       ret:(b -> a) &
+       mid:Sem.post state b &
+       act:Sem.action state b {
+         act.pre == pre `star` si ot c /\
+         (forall x. act.post x == mid x `star` si ot (PulseCore.NondeterministicHoareStateMonad.bump_prophecy c)) /\
+         (forall x. mid x == (F.on_dom a post) (ret x)) })))
+    (frame:slprop)
+    (t:Sem.tape)
+    (at:Sem.angel_tape)
+    (ot:Sem.observation_tape)
+    (c0:PulseCore.NondeterministicHoareStateMonad.ctr)
+    (fuel:pos)
+    (s0:state.s { state.budget s0 >= fuel /\
+      state.interp (((pre `star` frame) `star` si ot c0) `star` state.invariant s0) s0 })
+  : Dv (res:(a & state.s & PulseCore.NondeterministicHoareStateMonad.ctr) {
+      state.budget res._2 >= fuel - 1 /\
+      state.interp ((((F.on_dom a post) res._1 `star` frame) `star` si ot res._3) `star` state.invariant res._2) res._2 /\
+      res._3 == PulseCore.NondeterministicHoareStateMonad.bump_prophecy c0 })
+= Sem.run_alt_active_new_proph_return_action_with_ctr #state #pre #a #(F.on_dom a post) si alloc frame t at ot c0 fuel s0
+
+(** Adequacy-facing active observed-result runner for instantiated Pulse [stt]
+    computations.
+
+    This mirrors [run_active_new_proph_return_action_with_ctr] for Resolve-style
+    observed-result events.  Callers that own the active observation/counter
+    interpretation [si ot c0] can execute an
+    [ObservedResultActWithHiddenStateAction] payload without falling back to the
+    ordinary counter-erased [Sem.step] branch: the runner consumes exactly
+    [ot (NST.observation_index c0)] and returns with [si] closed at
+    [NST.bump_observation c0]. *)
+let run_active_observed_result_action_with_ctr (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (si:PulseCore.PartialNondeterministicHoareStateMonad.obs_tape -> PulseCore.NondeterministicHoareStateMonad.ctr -> slprop)
+    (k:(observed_nat:nat -> ot:PulseCore.PartialNondeterministicHoareStateMonad.obs_tape ->
+      c:PulseCore.NondeterministicHoareStateMonad.ctr{observed_nat == ot (PulseCore.NondeterministicHoareStateMonad.observation_index c)} ->
+      receipt:Sem.observed_result_current_event observed_nat ot c ->
+      value_event:(#t:Type0 -> x:t -> Sem.observed_result_value_event #t observed_nat ot c x) ->
+      resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        current_receipt:Sem.observed_result_current_event observed_nat ot c ->
+        value_receipt:Sem.observed_result_value_event #result observed_nat ot c x ->
+        Sem.observed_result_resolve_event #result #payload observed_nat ot c pack pid x payload_value) ->
+      (b:Type u#100 &
+       mid:Sem.post state b &
+       act:Sem.action state b {
+         act.pre == state.star pre (si ot c) /\
+         act.post == F.on_dom b (fun y -> state.star (mid y) (si ot (PulseCore.NondeterministicHoareStateMonad.bump_observation c))) } &
+       (y:b -> Dv (Sem.m #state a (mid y) (F.on_dom a post))))))
+    (frame:slprop)
+    (t:Sem.tape)
+    (at:Sem.angel_tape)
+    (ot:Sem.observation_tape)
+    (c0:PulseCore.NondeterministicHoareStateMonad.ctr)
+    (fuel:pos)
+    (s0:state.s { state.budget s0 >= fuel /\
+      state.interp (((pre `star` frame) `star` si ot c0) `star` state.invariant s0) s0 })
+  : Dv (res:(Sem.step_result a (F.on_dom a post) frame & state.s & PulseCore.NondeterministicHoareStateMonad.ctr) {
+      state.budget res._2 >= fuel - 1 /\
+      state.interp (((Sem.Step?.next res._1 `star` frame) `star` si ot res._3) `star` state.invariant res._2) res._2 /\
+      res._3 == PulseCore.NondeterministicHoareStateMonad.bump_observation c0 })
+= Sem.run_alt_active_observed_result_action_with_ctr #state #pre #a #(F.on_dom a post) si k frame t at ot c0 fuel s0
+
+(** Adequacy-facing active observed-result value runner for the Ret-specialized
+    public Resolve lowering.
+
+    This is the instantiated counterpart of
+    [Sem.run_alt_active_observed_result_return_action_with_ctr].  Unlike
+    [run_active_observed_result_action_with_ctr], it executes the
+    [ObservedResultActWithHiddenStateReturnAction] payload to the final public
+    value under runner-owned [si ot c0] and returns with the observation cursor
+    advanced to [NST.bump_observation c0], without handing any residual to the
+    ordinary counter-erased [Sem.run] branch. *)
+let run_active_observed_result_return_action_with_ctr (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (si:PulseCore.PartialNondeterministicHoareStateMonad.obs_tape -> PulseCore.NondeterministicHoareStateMonad.ctr -> slprop)
+    (k:(observed_nat:nat -> ot:PulseCore.PartialNondeterministicHoareStateMonad.obs_tape ->
+      c:PulseCore.NondeterministicHoareStateMonad.ctr{observed_nat == ot (PulseCore.NondeterministicHoareStateMonad.observation_index c)} ->
+      receipt:Sem.observed_result_current_event observed_nat ot c ->
+      value_event:(#t:Type0 -> x:t -> Sem.observed_result_value_event #t observed_nat ot c x) ->
+      resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        current_receipt:Sem.observed_result_current_event observed_nat ot c ->
+        value_receipt:Sem.observed_result_value_event #result observed_nat ot c x ->
+        Sem.observed_result_resolve_event #result #payload observed_nat ot c pack pid x payload_value) ->
+      (b:Type u#100 &
+       ret:(b -> a) &
+       mid:Sem.post state b &
+       act:Sem.action state b {
+         act.pre == state.star pre (si ot c) /\
+         act.post == F.on_dom b (fun y -> state.star (mid y) (si ot (PulseCore.NondeterministicHoareStateMonad.bump_observation c))) /\
+         (forall y. mid y == (F.on_dom a post) (ret y)) })))
+    (frame:slprop)
+    (t:Sem.tape)
+    (at:Sem.angel_tape)
+    (ot:Sem.observation_tape)
+    (c0:PulseCore.NondeterministicHoareStateMonad.ctr)
+    (fuel:pos)
+    (s0:state.s { state.budget s0 >= fuel /\
+      state.interp (((pre `star` frame) `star` si ot c0) `star` state.invariant s0) s0 })
+  : Dv (res:(a & state.s & PulseCore.NondeterministicHoareStateMonad.ctr) {
+      state.budget res._2 >= fuel - 1 /\
+      state.interp ((((F.on_dom a post) res._1 `star` frame) `star` si ot res._3) `star` state.invariant res._2) res._2 /\
+      res._3 == PulseCore.NondeterministicHoareStateMonad.bump_observation c0 })
+= Sem.run_alt_active_observed_result_return_action_with_ctr #state #pre #a #(F.on_dom a post) si k frame t at ot c0 fuel s0

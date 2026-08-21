@@ -1,13 +1,19 @@
 (* Copyright 2026 Microsoft Research. Apache 2.0. *)
 (** RDCSS — inspired by Iris logatom/rdcss.
     
-    SIMPLIFIED: l_m's value is passed as a parameter (m_val) rather than
-    read from a concurrent location. The descriptor/helping protocol is
-    not implemented. However, the operation IS logically atomic wrt l_n:
-    it has an AU/LAT spec parametric in Φ.
+    PARTIAL IRIS PORT: the exported wrapper below now reads l_m from a
+    physical shared box before invoking the logically atomic l_n update, but
+    the descriptor/helping protocol is not implemented. The operation IS
+    logically atomic wrt l_n: it has an AU/LAT spec parametric in Φ.
     
-    Full Iris version would need: shared l_m under invariant, descriptor
-    heap cell, helping protocol, and prophecy-based LP identification. *)
+    The main loop now allocates a prophecy variable and resolves the CAS inside
+    the invariant through the client-facing atomic Resolve rule, so the n-CAS
+    linearization evidence is no longer the old prophecy-avoiding shortcut.
+    The full Iris version still needs: descriptor ownership/helping under the
+    invariant and prophecy-based LP identification across helpers.  This file
+    now includes verified descriptor-slot CAS install and completion/helping
+    steps as building blocks for replacing the simplified U32-only l_n
+    representation. *)
 module PulseTutorial.RDCSS
 #lang-pulse
 open Pulse.Lib.Pervasives
@@ -16,6 +22,7 @@ module B = Pulse.Lib.Box
 module GR = Pulse.Lib.GhostReference
 module U32 = FStar.UInt32
 module AP = Pulse.Lib.AtomicPrimitives
+module P = Pulse.Lib.Prophecy
 open Pulse.Lib.Inv
 open Pulse.Lib.Trade
 open Pulse.Lib.Forall
@@ -48,6 +55,77 @@ let rdcss_inv_inner (l_n : B.box U32.t) (gr : GR.ref U32.t) : slprop =
 
 let rdcss_inv_raw (s:rdcss_state) : slprop = rdcss_inv_inner s.l_n s.rg.gr
 let is_rdcss (s:rdcss_state) : slprop = inv s.ri (rdcss_inv_raw s)
+
+(** Descriptor-shaped slot used by the future faithful RDCSS port.
+
+    The exported example below still stores plain [U32.t] in [l_n].  Iris's
+    RDCSS temporarily installs a descriptor in [l_n] so helpers can complete the
+    operation.  This eqtype model and CAS install step are kept separate from
+    the current proof while the invariant/helping proof is being ported. *)
+type rdcss_descriptor = {
+  desc_m1 : U32.t;
+  desc_n1 : U32.t;
+  desc_n2 : U32.t;
+}
+
+type rdcss_slot =
+  | RdcssValue : U32.t -> rdcss_slot
+  | RdcssDescriptor : rdcss_descriptor -> rdcss_slot
+
+fn rdcss_descriptor_install_step
+    (l_n:B.box rdcss_slot)
+    (d:rdcss_descriptor)
+    (#cur:erased rdcss_slot)
+  requires B.pts_to l_n cur
+  returns b:bool
+  ensures AP.cond b
+    (B.pts_to l_n (RdcssDescriptor d) ** pure (reveal cur == RdcssValue d.desc_n1))
+    (B.pts_to l_n cur)
+{
+  AP.atomic_cas l_n (RdcssValue d.desc_n1) (RdcssDescriptor d)
+}
+
+(** One helper/completion step for a descriptor already installed in [l_n].
+
+    This is the operational core missing from the simplified exported RDCSS
+    proof: a helper reads the shared [l_m] location, decides the descriptor's
+    final value, and tries to replace the descriptor by that value.  The helper
+    is still a standalone building block (the active invariant below stores
+    plain [U32.t]), but unlike the older model it verifies the actual
+    descriptor-helping action shape used by the Iris implementation. *)
+fn rdcss_descriptor_complete_step
+    (l_m:B.box U32.t)
+    (l_n:B.box rdcss_slot)
+    (d:rdcss_descriptor)
+    (#m_cur:erased U32.t)
+    (#q:perm)
+  requires B.pts_to l_m #q m_cur ** B.pts_to l_n (RdcssDescriptor d)
+  returns b:bool
+  ensures B.pts_to l_m #q m_cur **
+    AP.cond b
+      (B.pts_to l_n (RdcssValue (if reveal m_cur = d.desc_m1 then d.desc_n2 else d.desc_n1)))
+      (B.pts_to l_n (RdcssDescriptor d))
+{
+  let m = AP.atomic_read l_m;
+  assert pure (m == reveal m_cur);
+  let b = AP.atomic_cas l_n (RdcssDescriptor d)
+    (RdcssValue (if m = d.desc_m1 then d.desc_n2 else d.desc_n1));
+  if b {
+    unfold AP.cond;
+    rewrite each m as (reveal m_cur);
+    drop_ (pure (RdcssDescriptor d == RdcssDescriptor d));
+    fold (AP.cond true
+      (B.pts_to l_n (RdcssValue (if reveal m_cur = d.desc_m1 then d.desc_n2 else d.desc_n1)))
+      (B.pts_to l_n (RdcssDescriptor d)));
+    true
+  } else {
+    unfold AP.cond;
+    fold (AP.cond false
+      (B.pts_to l_n (RdcssValue (if reveal m_cur = d.desc_m1 then d.desc_n2 else d.desc_n1)))
+      (B.pts_to l_n (RdcssDescriptor d)));
+    false
+  }
+}
 
 fn new_rdcss (init:U32.t)
   requires emp
@@ -95,6 +173,207 @@ fn get_rdcss (s:rdcss_state)
 (* try_rdcss — single atomic CAS inside invariant                   *)
 (* ================================================================ *)
 
+(** Prophecy-resolved CAS slice for the future Iris-style RDCSS port.
+    Full RDCSS still needs descriptors/helping and AU plumbing, but this helper
+    couples the CAS result to a prophecy prediction in the same observable
+    atomic step. *)
+fn cas_with_prophecy
+    (r:B.box U32.t)
+    (expected new_val:U32.t)
+    (p:P.prophecy_var bool unit)
+    (#cur:erased U32.t)
+    (#pred:erased bool)
+    (#tail:erased (P.prediction_stream bool unit))
+  requires B.pts_to r cur ** P.prophecy_token p ((reveal pred, ()) :: reveal tail)
+  returns b:bool
+  ensures AP.cond b (B.pts_to r new_val ** pure (reveal cur == expected))
+                    (B.pts_to r cur) **
+          P.prophecy_token p (reveal tail) ** pure (b == reveal pred)
+{
+  let b = P.resolve #bool #unit p () #pred #tail
+    #(B.pts_to r cur)
+    #(fun b -> AP.cond b (B.pts_to r new_val ** pure (reveal cur == expected))
+                         (B.pts_to r cur))
+    fn _ { AP.atomic_cas r expected new_val };
+  b
+}
+
+
+fn try_rdcss_with_prophecy
+    (s:rdcss_state) (n1 n2 : U32.t)
+    (p:P.prophecy_var bool unit)
+    (#n : erased U32.t)
+    (#pred : erased bool)
+    (#tail : erased (P.prediction_stream bool unit))
+  requires is_rdcss s ** GR.pts_to s.rg.gr #0.5R n **
+           P.prophecy_token p ((reveal pred, ()) :: reveal tail)
+  returns b : bool
+  ensures AP.cond b
+    (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 **
+      P.prophecy_token p (reveal tail) ** pure (b == reveal pred) ** pure (reveal n == n1))
+    (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n **
+      P.prophecy_token p (reveal tail) ** pure (b == reveal pred))
+{
+  unfold is_rdcss;
+  let b = with_invariants bool emp_inames s.ri (rdcss_inv_raw s)
+    (GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p ((reveal pred, ()) :: reveal tail))
+    (fun b -> AP.cond b
+      (GR.pts_to s.rg.gr #0.5R n2 ** P.prophecy_token p (reveal tail) **
+        pure (b == reveal pred) ** pure (reveal n == n1))
+      (GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p (reveal tail) **
+        pure (b == reveal pred)))
+  fn _ {
+    let b = P.resolve_atomic #bool #unit p () #pred #tail
+      #(rdcss_inv_raw s ** GR.pts_to s.rg.gr #0.5R n)
+      #(fun b -> rdcss_inv_raw s ** AP.cond b
+        (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1))
+        (GR.pts_to s.rg.gr #0.5R n))
+      fn _ {
+        unfold rdcss_inv_raw; unfold rdcss_inv_inner;
+        let b = AP.atomic_cas s.l_n n1 n2;
+        if b {
+          elim_cond_true _ _;
+          with n0. assert (B.pts_to s.l_n n2 ** GR.pts_to s.rg.gr #0.5R n0 ** GR.pts_to s.rg.gr #0.5R n);
+          GR.pts_to_injective_eq s.rg.gr;
+          rewrite each n0 as (reveal n);
+          GR.gather s.rg.gr;
+          GR.(s.rg.gr := n2);
+          GR.share s.rg.gr;
+          fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
+          fold (AP.cond true (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (GR.pts_to s.rg.gr #0.5R n));
+          true
+        } else {
+          elim_cond_false _ _;
+          fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
+          fold (AP.cond false (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (GR.pts_to s.rg.gr #0.5R n));
+          false
+        }
+      };
+    if b {
+      elim_cond_true _ _;
+      fold (AP.cond true
+        (GR.pts_to s.rg.gr #0.5R n2 ** P.prophecy_token p (reveal tail) ** pure (true == reveal pred) ** pure (reveal n == n1))
+        (GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p (reveal tail) ** pure (true == reveal pred)));
+      true
+    } else {
+      elim_cond_false _ _;
+      fold (AP.cond false
+        (GR.pts_to s.rg.gr #0.5R n2 ** P.prophecy_token p (reveal tail) ** pure (false == reveal pred) ** pure (reveal n == n1))
+        (GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p (reveal tail) ** pure (false == reveal pred)));
+      false
+    }
+  };
+  if b {
+    elim_cond_true _ _;
+    fold (is_rdcss s);
+    fold (AP.cond true
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** P.prophecy_token p (reveal tail) ** pure (true == reveal pred) ** pure (reveal n == n1))
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p (reveal tail) ** pure (true == reveal pred)));
+    true
+  } else {
+    elim_cond_false _ _;
+    fold (is_rdcss s);
+    fold (AP.cond false
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** P.prophecy_token p (reveal tail) ** pure (false == reveal pred) ** pure (reveal n == n1))
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p (reveal tail) ** pure (false == reveal pred)));
+    false
+  }
+}
+
+fn try_rdcss_with_prophecy_token
+    (s:rdcss_state) (n1 n2 : U32.t)
+    (p:P.prophecy_var bool unit)
+    (#n : erased U32.t)
+    (#pvs : erased (P.prediction_stream bool unit))
+  requires is_rdcss s ** GR.pts_to s.rg.gr #0.5R n **
+           P.prophecy_token p (reveal pvs)
+  returns b : bool
+  ensures AP.cond b
+    (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1) **
+      (exists* (tail:P.prediction_stream bool unit).
+        P.prophecy_token p tail ** pure (reveal pvs == (true, ()) :: tail)))
+    (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n **
+      (exists* (tail:P.prediction_stream bool unit).
+        P.prophecy_token p tail ** pure (reveal pvs == (false, ()) :: tail)))
+{
+  unfold is_rdcss;
+  let b = with_invariants bool emp_inames s.ri (rdcss_inv_raw s)
+    (GR.pts_to s.rg.gr #0.5R n ** P.prophecy_token p (reveal pvs))
+    (fun b -> AP.cond b
+      (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1) **
+        (exists* (tail:P.prediction_stream bool unit).
+          P.prophecy_token p tail ** pure (reveal pvs == (true, ()) :: tail)))
+      (GR.pts_to s.rg.gr #0.5R n **
+        (exists* (tail:P.prediction_stream bool unit).
+          P.prophecy_token p tail ** pure (reveal pvs == (false, ()) :: tail))))
+  fn _ {
+    let b = P.resolve_token_atomic #bool #unit p () #pvs
+      #(rdcss_inv_raw s ** GR.pts_to s.rg.gr #0.5R n)
+      #(fun b -> rdcss_inv_raw s ** AP.cond b
+        (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1))
+        (GR.pts_to s.rg.gr #0.5R n))
+      fn _ {
+        unfold rdcss_inv_raw; unfold rdcss_inv_inner;
+        let b = AP.atomic_cas s.l_n n1 n2;
+        if b {
+          elim_cond_true _ _;
+          with n0. assert (B.pts_to s.l_n n2 ** GR.pts_to s.rg.gr #0.5R n0 ** GR.pts_to s.rg.gr #0.5R n);
+          GR.pts_to_injective_eq s.rg.gr;
+          rewrite each n0 as (reveal n);
+          GR.gather s.rg.gr;
+          GR.(s.rg.gr := n2);
+          GR.share s.rg.gr;
+          fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
+          fold (AP.cond true (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (GR.pts_to s.rg.gr #0.5R n));
+          true
+        } else {
+          elim_cond_false _ _;
+          fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
+          fold (AP.cond false (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (GR.pts_to s.rg.gr #0.5R n));
+          false
+        }
+      };
+    if b {
+      elim_cond_true _ _;
+      with tail. assert (P.prophecy_token p tail ** pure (pvs == (true, ()) :: tail));
+      fold (AP.cond true
+        (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1) **
+          (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (true, ()) :: tail)))
+        (GR.pts_to s.rg.gr #0.5R n **
+          (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (false, ()) :: tail))));
+      true
+    } else {
+      elim_cond_false _ _;
+      with tail. assert (P.prophecy_token p tail ** pure (pvs == (false, ()) :: tail));
+      fold (AP.cond false
+        (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1) **
+          (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (true, ()) :: tail)))
+        (GR.pts_to s.rg.gr #0.5R n **
+          (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (false, ()) :: tail))));
+      false
+    }
+  };
+  if b {
+    elim_cond_true _ _;
+    fold (is_rdcss s);
+    fold (AP.cond true
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1) **
+        (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (true, ()) :: tail)))
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n **
+        (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (false, ()) :: tail))));
+    true
+  } else {
+    elim_cond_false _ _;
+    fold (is_rdcss s);
+    fold (AP.cond false
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1) **
+        (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (true, ()) :: tail)))
+      (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n **
+        (exists* (tail:P.prediction_stream bool unit). P.prophecy_token p tail ** pure (reveal pvs == (false, ()) :: tail))));
+    false
+  }
+}
+
 fn try_rdcss (s:rdcss_state) (n1 n2 : U32.t) (#n : erased U32.t)
   requires is_rdcss s ** GR.pts_to s.rg.gr #0.5R n
   returns b : bool
@@ -102,41 +381,19 @@ fn try_rdcss (s:rdcss_state) (n1 n2 : U32.t) (#n : erased U32.t)
     (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1))
     (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n)
 {
-  unfold is_rdcss;
-  let b = with_invariants bool emp_inames s.ri (rdcss_inv_raw s)
-    (GR.pts_to s.rg.gr #0.5R n)
-    (fun b -> AP.cond b
-      (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1))
-      (GR.pts_to s.rg.gr #0.5R n))
-  fn _ {
-    unfold rdcss_inv_raw; unfold rdcss_inv_inner;
-    let b = AP.atomic_cas s.l_n n1 n2;
-    if b {
-      elim_cond_true _ _;
-      with n0. assert (B.pts_to s.l_n n2 ** GR.pts_to s.rg.gr #0.5R n0 ** GR.pts_to s.rg.gr #0.5R n);
-      GR.pts_to_injective_eq s.rg.gr;
-      rewrite each n0 as (reveal n);
-      GR.gather s.rg.gr;
-      GR.(s.rg.gr := n2);
-      GR.share s.rg.gr;
-      fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
-      fold (AP.cond true (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (GR.pts_to s.rg.gr #0.5R n));
-      true
-    } else {
-      elim_cond_false _ _;
-      fold (rdcss_inv_inner s.l_n s.rg.gr); fold (rdcss_inv_raw s);
-      fold (AP.cond false (GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (GR.pts_to s.rg.gr #0.5R n));
-      false
-    }
-  };
+  let p = P.prophecy_alloc #bool #unit ();
+  with pvs. assert (P.prophecy_token p pvs);
+  let b = try_rdcss_with_prophecy_token s n1 n2 p #n #pvs;
   if b {
     elim_cond_true _ _;
-    fold (is_rdcss s);
+    with tail. assert (P.prophecy_token p tail ** pure (pvs == (true, ()) :: tail));
+    drop_ (P.prophecy_token p tail);
     fold (AP.cond true (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n));
     true
   } else {
     elim_cond_false _ _;
-    fold (is_rdcss s);
+    with tail. assert (P.prophecy_token p tail ** pure (pvs == (false, ()) :: tail));
+    drop_ (P.prophecy_token p tail);
     fold (AP.cond false (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n2 ** pure (reveal n == n1)) (is_rdcss s ** GR.pts_to s.rg.gr #0.5R n));
     false
   }
@@ -235,6 +492,22 @@ fn rdcss (s:rdcss_state) (m_val m1 n1 n2 : U32.t)
   rdcss_loop s m_val m1 n1 n2 tok ()
 }
 
+(** Wrapper that removes the old external [m_val] shortcut for clients: the
+    operation first performs an observable atomic read of [l_m], then uses that
+    value as the m-side comparison input for the AU-protected l_n update.  This
+    still stops short of the full Iris descriptor/helping protocol, but [l_m] is
+    now an actual shared location read by the operation rather than a caller
+    supplied pure parameter. *)
+fn rdcss_with_m (s:rdcss_state) (l_m:B.box U32.t) (m1 n1 n2 : U32.t)
+    (#m_cur : erased U32.t) (#n : erased U32.t) (#q:perm)
+  requires is_rdcss s ** rdcss_content s.rg n ** B.pts_to l_m #q m_cur
+  ensures is_rdcss s ** B.pts_to l_m #q m_cur ** (exists* n'. rdcss_content s.rg n')
+{
+  let m_val = AP.atomic_read l_m;
+  drop_ (pure (m_val == reveal m_cur));
+  rdcss s m_val m1 n1 n2
+}
+
 (* ================================================================ *)
 (* Client example                                                   *)
 (* ================================================================ *)
@@ -244,12 +517,14 @@ fn rdcss_client ()
   ensures emp
 {
   let s = new_rdcss 42ul;
-  // RDCSS: if m_val==10 && *l_n==42 then *l_n := 99
-  rdcss s 10ul 10ul 42ul 99ul;
+  let l_m = B.alloc 10ul;
+  // RDCSS: read *l_m; if it is 10 and *l_n is 42 then *l_n := 99.
+  rdcss_with_m s l_m 10ul 42ul 99ul;
   // Read to verify
   let cur = get_rdcss s;
   // Cleanup
   with n'. assert (rdcss_content s.rg n');
+  B.free l_m;
   drop_ (is_rdcss s);
   drop_ (rdcss_content s.rg n')
 }

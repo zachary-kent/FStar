@@ -17,7 +17,10 @@
 module PulseCore.Action
 
 module I = PulseCore.InstantiatedSemantics
+module Sem = PulseCore.Semantics
 module Sep = PulseCore.IndirectionTheorySep
+module NST = PulseCore.NondeterministicHoareStateMonad
+module PW = PulseCore.ProphecyWorld
 open FStar.PCM
 open FStar.Ghost
 open Pulse.Lib.Loc
@@ -36,6 +39,76 @@ let ( ^^ ) (r1 r2 : reifiability) : reifiability =
 let iref : Type0 = Sep.iref
 let inames = Sep.inames
 let singleton (i:iref) : inames = Sep.single i
+
+(** Resolve-specific active observed-result certificate.
+
+    The constructor is hidden by this interface: clients can only receive this
+    receipt from the active observed-result lowering callback, after the
+    physical observable action has returned [x] and the runner has consumed the
+    current observation cell [observed_nat].  The untyped prophecy id [pid] is
+    part of the hidden receipt index, so public Resolve cannot retarget a
+    receipt to another prophecy.  Higher-level prophecy code may tie this
+    receipt to its singleton prophecy-world decoder boundary; ordinary callers
+    cannot manufacture one through the public Core API. *)
+[@@ erasable]
+val observed_result_resolve_event
+    (#result #payload:Type0)
+    (observed_nat:nat)
+    (ot:NST.obs_tape)
+    (c:NST.ctr{observed_nat == ot (NST.observation_index c)})
+    (pack:result -> payload -> nat)
+    (pid:nat)
+    (x:result)
+    (payload_value:payload)
+  : Type0
+
+(** Target-fixed Resolve certificate for public prophecy lowering.
+
+    Unlike the generic callback-local [observed_result_resolve_event]
+    constructor capability, this receipt is indexed by the single prophecy id,
+    payload packer, and payload value selected before the active observed-result
+    action is built.  Public Resolve uses this narrower receipt so the checked
+    finisher cannot be fed a certificate retargeted through the generic
+    universally-quantified event capability. *)
+[@@ erasable]
+val observed_result_targeted_resolve_event
+    (#result #payload:Type0)
+    (observed_nat:nat)
+    (ot:NST.obs_tape)
+    (c:NST.ctr{observed_nat == ot (NST.observation_index c)})
+    (pack:result -> payload -> nat)
+    (pid:nat)
+    (payload_value:payload)
+    (x:result)
+  : Type0
+
+(** Decoder fact eliminator for a target-fixed active Resolve event.
+
+    The receipt is abstract at the Action API and, via the Semantics private
+    representation, can only be obtained from active observed-result runner
+    callbacks.  Its private Semantics representation carries the runner-minted
+    target-fixed observation adequacy certificate for the consumed current cell,
+    fixed [pid], actual result [x], and [payload_value].  This eliminator only
+    replays that certificate: it performs no token update and no world update;
+    callers still have to prove the token head and call the checked
+    [PWR.resolve_current] update. *)
+val observed_result_targeted_resolve_event_decoder_fact
+    (#result #payload:Type0)
+    (observed_nat:nat)
+    (ot:NST.obs_tape)
+    (c:NST.ctr{observed_nat == ot (NST.observation_index c)})
+    (pack:result -> payload -> nat)
+    (pid:nat)
+    (payload_value:payload)
+    (x:result)
+    (event:observed_result_targeted_resolve_event #result #payload observed_nat ot c pack pid payload_value x)
+    (st:PW.state_view)
+    (len:nat)
+  : Lemma
+      (requires PW.state_interp st /\ PW.runtime_matches_ctr st ot c len)
+      (ensures st.PW.world_decoder observed_nat ==
+        Some { PW.proph = pid; PW.payload = pack x payload_value })
+
 let emp_inames : inames = GhostSet.empty
 
 let join_inames (is1 is2 : inames) : inames =
@@ -125,6 +198,290 @@ val sub
 val lift (#a:Type u#a) #r #opens (#pre:slprop) (#post:a -> slprop)
          (m:act a r opens pre post)
 : I.stt a pre post
+
+(** Lift an atomic action into the semantic [stt] monad through a
+    result-dependent observation step, then continue with access to both the
+    physical result and decoded observation. *)
+val lift_observed_result_cont
+    (#a:Type u#a)
+    (#obs:a -> Type u#100)
+    (#b:Type u#b)
+    (decode_obs:(x:a -> nat -> obs x))
+    (#opens:inames)
+    (#pre:slprop)
+    (#mid:a -> slprop)
+    (#post:b -> slprop)
+    (m:act a Atomic opens pre mid)
+    (k:(x:a -> obs x -> I.stt b (mid x) post))
+: I.stt b pre post
+
+(** Hidden-state sibling of [lift_observed_result_cont].  The public pre/post
+    remain ordinary, while prophecy-aware adequacy supplies the result-dependent
+    hidden state [si_pre] at the consumed observation and receives [si_post] at
+    [NST.bump_observation]. *)
+val lift_observed_result_cont_hidden_state
+    (#a:Type u#a)
+    (#obs:a -> Type u#100)
+    (#b:Type u#b)
+    (decode_obs:(x:a -> nat -> obs x))
+    (#opens:inames)
+    (#pre:slprop)
+    (#mid:a -> slprop)
+    (#post:b -> slprop)
+    (#si_pre:(x:a -> obs x -> NST.obs_tape -> NST.ctr -> slprop))
+    (#si_post:(x:a -> obs x -> NST.obs_tape -> NST.ctr -> slprop))
+    (m:act a Atomic opens pre mid)
+    (k:(x:a -> observed_nat:nat -> o:obs x { o == decode_obs x observed_nat } ->
+      #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      I.stt b (mid x ** si_pre x o (reveal ot) (reveal c))
+        (fun y -> post y ** si_post x o (reveal ot) (NST.bump_observation (reveal c)))))
+: I.stt b pre post
+
+(** Native active observed-result hidden-state action.  The callback is the
+    whole one-step action run under runner-owned [si ot c] and lowers to the
+    Ret-specialized [ObservedResultActWithHiddenStateReturnAction]; the active
+    runner consumes [ot (NST.observation_index c)] and closes [si] at
+    [NST.bump_observation c] without going through the ordinary divergent
+    [ObservedResultActWithHiddenState*] branches. *)
+val lift_observed_result_hidden_state_action_invs
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#opens:inames)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (Sem.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (Sem.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      act a Atomic opens
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+: I.stt a pre post
+
+val lift_observed_result_hidden_state_action
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (Sem.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (Sem.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      act a Atomic emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+: I.stt a pre post
+
+val lift_targeted_post_result_observed_result_hidden_state_action
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:act resolve_result Atomic emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         act unit Ghost emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+: I.stt resolve_result pre post
+
+(** Checked active execution path for the Ret-specialized hidden-state
+    observed-result lowering used by public Resolve.  The same callback used to
+    build [lift_observed_result_hidden_state_action] is handed directly to the
+    active observation runner, which consumes [ot (NST.observation_index c)] and
+    returns the final value without passing through the ordinary divergent
+    [ObservedResultActWithHiddenState*] branches. *)
+val observed_result_hidden_state_action_active_run
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (Sem.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (Sem.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      act a Atomic emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+    (frame:slprop)
+    (fuel:pos)
+  : PulseCore.Semantics.active_observed_run_result #state a (FStar.FunctionalExtensionality.on_dom a post) frame fuel pre
+
+val observed_result_targeted_post_result_hidden_state_action_active_run
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:act resolve_result Atomic emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         act unit Ghost emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+    (frame:slprop)
+    (fuel:pos)
+  : PulseCore.Semantics.active_observed_run_result #state resolve_result (FStar.FunctionalExtensionality.on_dom resolve_result post) frame fuel pre
+
+(** Adequacy-facing checked execution path for the target-fixed two-stage
+    observed-result lowering with explicit tapes/counter.  This is the concrete
+    Resolve runner used when adequacy owns [si ot c0]: it runs the physical
+    observable action, mints the target-fixed receipt for the actual result,
+    executes the neutral finisher, and returns with [NST.bump_observation c0]
+    without passing through the ordinary divergent hidden-state branches. *)
+val observed_result_targeted_post_result_hidden_state_action_active_run_with_ctr
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:act resolve_result Atomic emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         act unit Ghost emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+    (frame:slprop)
+    (t:PulseCore.Semantics.tape)
+    (at:PulseCore.Semantics.angel_tape)
+    (ot:PulseCore.Semantics.observation_tape)
+    (c0:NST.ctr)
+    (fuel:pos)
+    (s0:state.s { state.budget s0 >= fuel /\
+      state.interp (((pre ** frame) ** si ot c0) ** state.invariant s0) s0 })
+  : Dv (res:(resolve_result & state.s & NST.ctr) {
+      state.budget res._2 >= fuel - 1 /\
+      state.interp ((((FStar.FunctionalExtensionality.on_dom resolve_result post) res._1 ** frame) ** si ot res._3) ** state.invariant res._2) res._2 /\
+      res._3 == NST.bump_observation c0 })
+
+(** Adequacy-facing checked execution path for the same Ret-specialized
+    observed-result lowering with explicit tapes/counter.  This is the public
+    Resolve-side counterpart of [fresh_prophecy_id_hidden_state_action_active_run]
+    when a top-level adequacy proof already owns [si ot c0]. *)
+val observed_result_hidden_state_action_active_run_with_ctr
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (Sem.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (Sem.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (Sem.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      act a Atomic emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+    (frame:slprop)
+    (t:PulseCore.Semantics.tape)
+    (at:PulseCore.Semantics.angel_tape)
+    (ot:PulseCore.Semantics.observation_tape)
+    (c0:NST.ctr)
+    (fuel:pos)
+    (s0:state.s { state.budget s0 >= fuel /\
+      state.interp (((pre ** frame) ** si ot c0) ** state.invariant s0) s0 })
+  : Dv (res:(a & state.s & NST.ctr) {
+      state.budget res._2 >= fuel - 1 /\
+      state.interp ((((FStar.FunctionalExtensionality.on_dom a post) res._1 ** frame) ** si ot res._3) ** state.invariant res._2) res._2 /\
+      res._3 == NST.bump_observation c0 })
+
+(** Checked active execution path for the same Ret-specialized hidden-state
+    NewProph lowering.  This entry point is the non-diverging runner used when
+    adequacy owns [si ot c] as active hidden state. *)
+val fresh_prophecy_id_hidden_state_action_active_run
+    (#a:Type u#a)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      act a Ghost emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+    (frame:slprop)
+    (fuel:pos)
+  : PulseCore.Semantics.active_run_result #state a (FStar.FunctionalExtensionality.on_dom a post) frame fuel emp
+
+(** Checked active execution path for the same Ret-specialized hidden-state
+    NewProph lowering with explicit tapes/counter.  Adequacy code that owns
+    [si ot c0] can execute the public NewProph shape directly and returns at
+    [NST.bump_prophecy c0], without dispatching through the ordinary divergent
+    hidden-state branch. *)
+val fresh_prophecy_id_hidden_state_action_active_run_with_ctr
+    (#a:Type u#a)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      act a Ghost emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+    (frame:slprop)
+    (t:PulseCore.Semantics.tape)
+    (at:PulseCore.Semantics.angel_tape)
+    (ot:PulseCore.Semantics.observation_tape)
+    (c0:NST.ctr)
+    (fuel:pos)
+    (s0:state.s { state.budget s0 >= fuel /\
+      state.interp (((emp ** frame) ** si ot c0) ** state.invariant s0) s0 })
+  : Dv (res:(a & state.s & NST.ctr) {
+      state.budget res._2 >= fuel - 1 /\
+      state.interp ((((FStar.FunctionalExtensionality.on_dom a post) res._1 ** frame) ** si ot res._3) ** state.invariant res._2) res._2 /\
+      res._3 == NST.bump_prophecy c0 })
+
+(** Lift a neutral/ghost allocation action through the active FreshProph cursor
+    while a prophecy-aware runner owns [si ot c].  The action closes [si] at
+    [NST.bump_prophecy c] in the same semantic NewProph step. *)
+val lift_fresh_prophecy_id_hidden_state_action
+    (#a:Type u#a)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (m:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      act a Ghost emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+: I.stt a emp post
+
 
 //////////////////////////////////////////////////////////////////////
 // Invariants

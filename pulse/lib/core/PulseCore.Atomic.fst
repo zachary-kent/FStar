@@ -18,6 +18,7 @@ module PulseCore.Atomic
 
 module A = PulseCore.Action
 module I = PulseCore.InstantiatedSemantics
+module NST = PulseCore.NondeterministicHoareStateMonad
 module Set = FStar.GhostSet
 open PulseCore.InstantiatedSemantics
 open PulseCore.Action
@@ -118,6 +119,180 @@ let lift_atomic
     (e:stt_atomic a #obs opens pre post)
 : stt a pre post
 = A.lift e
+
+let lift_atomic_observed_result_cont
+    (#a:Type u#a)
+    (#obs:a -> Type u#100)
+    (#b:Type u#b)
+    (decode_obs:(x:a -> nat -> obs x))
+    (#opens:inames)
+    (#pre:slprop)
+    (#mid:a -> slprop)
+    (#post:b -> slprop)
+    (e:stt_atomic a #Observable opens pre mid)
+    (k:(x:a -> obs x -> stt b (mid x) post))
+: stt b pre post
+= A.lift_observed_result_cont decode_obs e k
+
+let lift_atomic_observed_result_cont_hidden_state
+    (#a:Type u#a)
+    (#obs:a -> Type u#100)
+    (#b:Type u#b)
+    (decode_obs:(x:a -> nat -> obs x))
+    (#opens:inames)
+    (#pre:slprop)
+    (#mid:a -> slprop)
+    (#post:b -> slprop)
+    (#si_pre:(x:a -> obs x -> NST.obs_tape -> NST.ctr -> slprop))
+    (#si_post:(x:a -> obs x -> NST.obs_tape -> NST.ctr -> slprop))
+    (e:stt_atomic a #Observable opens pre mid)
+    (k:(x:a -> observed_nat:nat -> o:obs x { o == decode_obs x observed_nat } ->
+      #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      stt b (mid x ** si_pre x o (reveal ot) (reveal c))
+        (fun y -> post y ** si_post x o (reveal ot) (NST.bump_observation (reveal c)))))
+: stt b pre post
+= A.lift_observed_result_cont_hidden_state decode_obs #opens #pre #mid #post #si_pre #si_post e k
+
+let lift_atomic_observed_result_hidden_state_action
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (PulseCore.Semantics.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (PulseCore.Semantics.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (PulseCore.Action.observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      stt_atomic a #Observable emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+: stt a pre post
+= A.lift_observed_result_hidden_state_action #a #pre #post #si e
+
+let lift_atomic_targeted_post_result_observed_result_hidden_state_action
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:stt_atomic resolve_result #Observable emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (PulseCore.Action.observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         stt_atomic unit #Neutral emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+: stt resolve_result pre post
+= A.lift_targeted_post_result_observed_result_hidden_state_action #resolve_result #resolve_payload #pack #pid #payload_value #pre #post #si e
+
+let lift_atomic_observed_result_hidden_state_action_invs
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#opens:inames)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (PulseCore.Semantics.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (PulseCore.Semantics.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (PulseCore.Action.observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      stt_atomic a #Observable opens
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+: stt a pre post
+= A.lift_observed_result_hidden_state_action_invs #a #pre #post #opens #si e
+
+let observed_result_hidden_state_action_active_run
+    (#a:Type u#a)
+    (#pre:slprop)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      #value_event:(#t:Type0 -> x:t -> erased (PulseCore.Semantics.observed_result_value_event #t observed_nat (reveal ot) (reveal c) x)) ->
+      #resolve_event:(#result:Type0 -> #payload:Type0 -> pack:(result -> payload -> nat) -> pid:nat -> x:result -> payload_value:payload ->
+        #current_receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+        #value_receipt:erased (PulseCore.Semantics.observed_result_value_event #result observed_nat (reveal ot) (reveal c) x) ->
+        erased (PulseCore.Action.observed_result_resolve_event #result #payload observed_nat (reveal ot) (reveal c) pack pid x payload_value)) ->
+      stt_atomic a #Observable emp_inames
+        (pre ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))
+    (frame:slprop)
+    (fuel:pos)
+  : PulseCore.Semantics.active_observed_run_result #state a (FStar.FunctionalExtensionality.on_dom a post) frame fuel pre
+= A.observed_result_hidden_state_action_active_run #a #pre #post #si e frame fuel
+
+let observed_result_targeted_post_result_hidden_state_action_active_run
+    (#resolve_result #resolve_payload:Type0)
+    (#pack:erased (resolve_result -> resolve_payload -> nat))
+    (#pid:erased nat)
+    (#payload_value:erased resolve_payload)
+    (#pre:slprop)
+    (#post:resolve_result -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(observed_nat:nat -> #ot:erased NST.obs_tape ->
+      #c:erased (c:NST.ctr{observed_nat == (reveal ot) (NST.observation_index c)}) ->
+      #receipt:erased (PulseCore.Semantics.observed_result_current_event observed_nat (reveal ot) (reveal c)) ->
+      (physical_post:(resolve_result -> slprop) &
+       physical:stt_atomic resolve_result #Observable emp_inames
+         (pre ** si (reveal ot) (reveal c))
+         (fun x -> physical_post x ** si (reveal ot) (reveal c)) &
+       finish:(x:resolve_result ->
+         #event:erased (PulseCore.Action.observed_result_targeted_resolve_event #resolve_result #resolve_payload observed_nat (reveal ot) (reveal c)
+           (reveal pack) (reveal pid) (reveal payload_value) x) ->
+         stt_atomic unit #Neutral emp_inames
+           (physical_post x ** si (reveal ot) (reveal c))
+           (fun _ -> post x ** si (reveal ot) (NST.bump_observation (reveal c)))))))
+    (frame:slprop)
+    (fuel:pos)
+  : PulseCore.Semantics.active_observed_run_result #state resolve_result (FStar.FunctionalExtensionality.on_dom resolve_result post) frame fuel pre
+= A.observed_result_targeted_post_result_hidden_state_action_active_run #resolve_result #resolve_payload #pack #pid #payload_value #pre #post #si e frame fuel
+
+
+let lift_fresh_prophecy_id_hidden_state_action
+    (#a:Type u#a)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      stt_atomic a #Neutral emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+: stt a emp post
+= A.lift_fresh_prophecy_id_hidden_state_action #a #post #si e
+
+(** Active-runner view of the same public FreshProph hidden-state lowering.
+    This is intentionally not another syntax wrapper: it calls the checked
+    [PulseCore.Action] dispatcher on the exact allocation callback used by
+    [lift_fresh_prophecy_id_hidden_state_action], producing the non-diverging
+    runner result over runner-owned [si ot c]. *)
+let lift_fresh_prophecy_id_hidden_state_action_active_run
+    (#a:Type u#a)
+    (#post:a -> slprop)
+    (#si:NST.obs_tape -> NST.ctr -> slprop)
+    (e:(pid:nat -> #ot:erased NST.obs_tape -> #c:erased (c:NST.ctr{pid == NST.prophecy_index c}) ->
+      stt_atomic a #Neutral emp_inames
+        (emp ** si (reveal ot) (reveal c))
+        (fun x -> post x ** si (reveal ot) (NST.bump_prophecy (reveal c)))))
+    (frame:slprop)
+    (fuel:pos)
+  : PulseCore.Semantics.active_run_result #state a (FStar.FunctionalExtensionality.on_dom a post) frame fuel emp
+= A.fresh_prophecy_id_hidden_state_action_active_run #a #post #si e frame fuel
 
 let frame_atomic
     (#a:Type u#a)

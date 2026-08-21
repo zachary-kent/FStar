@@ -14,11 +14,13 @@
    limitations under the License.
 *)
 module PulseCore.InstantiatedSemantics
+module Sem = PulseCore.Semantics
 open PulseCore.IndirectionTheorySep
 open Pulse.Lib.Loc
 include PulseCore.IndirectionTheorySep { on, loc, somewhere }
 [@@erasable]
 let slprop : Type u#4 = slprop
+val state : s:Sem.state { s.pred == slprop /\ s.emp == PulseCore.IndirectionTheorySep.emp /\ s.star == PulseCore.IndirectionTheorySep.star }
 val timeless (p:slprop) : prop
 val emp : slprop
 val pure (p:prop) : slprop
